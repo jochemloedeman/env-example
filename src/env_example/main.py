@@ -5,7 +5,7 @@ from ast import (
 from collections import defaultdict
 from pathlib import Path
 
-from env_example.ast import (
+from env_example.ast_utils import (
     SettingField,
     extract_fields_from_settings,
     extract_settings_from_file,

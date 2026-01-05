@@ -4,8 +4,11 @@ version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
 authors = [
-    { name = "Jochem Loedeman", email = "60843521+jochemloedeman@users.noreply.github.com }
+    { name = "Jochem Loedeman", email = "60843521+jochemloedeman@users.noreply.github.com" }
 ]
+license = { file = "LICENSE" }
+repository = "https://github.com/jochemloedeman/env-example"
+homepage = "https://github.com/jochemloedeman/env-example"
 requires-python = ">=3.14"
 dependencies = []
 
@@ -17,7 +20,7 @@ requires = ["uv_build>=0.9.21,<0.10.0"]
 build-backend = "uv_build"
 
 [dependency-groups]
-dev = [
+test = [
     "pydantic-settings>=2.12.0",
     "pytest>=9.0.2",
 ]

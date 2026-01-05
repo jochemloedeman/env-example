@@ -26,7 +26,7 @@ version = "0.1.0"
 source = { editable = "." }
 
 [package.dev-dependencies]
-dev = [
+test = [
     { name = "pydantic-settings" },
     { name = "pytest" },
 ]
@@ -34,7 +34,7 @@ dev = [
 [package.metadata]
 
 [package.metadata.requires-dev]
-dev = [
+test = [
     { name = "pydantic-settings", specifier = ">=2.12.0" },
     { name = "pytest", specifier = ">=9.0.2" },
 ]

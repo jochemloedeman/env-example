@@ -139,7 +139,7 @@ def extract_fields_from_settings(cd: ClassDef) -> list[SettingField]:
     if len(prefixes) > 1:
         raise ValueError("Multiple prefixes found, invalid.")
 
-    prefix = prefixes[0] or None
+    prefix = prefixes[0] if prefixes else None
     fields: list[SettingField] = []
 
     for elem in cd.body:

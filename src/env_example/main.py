@@ -11,7 +11,7 @@ from env_example.ast_utils import (
     extract_settings_from_file,
 )
 
-DEFAULT_EXCLUDE_DIRS = {".venv"}
+ALWAYS_EXCLUDE_DIRS = {".venv"}
 
 
 def build_env_example(setting_fields: list[SettingField]) -> str:
@@ -28,18 +28,21 @@ def build_env_example(setting_fields: list[SettingField]) -> str:
 
 
 def run(
-    dir: Path | None,
-    exclude_dirs: list[str] | None,
+    project_root: Path,
+    exclude_relative: list[Path] | None,
 ) -> None:
-    dir: Path = dir or Path.cwd()
-
-    exclude: set[str] = DEFAULT_EXCLUDE_DIRS
-    if exclude_dirs:
-        exclude.update(set(exclude_dirs))
+    exclude_absolute = (
+        {p.resolve() for p in exclude_relative} if exclude_relative else {}
+    )
 
     settings_defs: list[ClassDef] = []
-    for root, dirs, files in dir.walk(top_down=True):
-        dirs[:] = [d for d in dirs if d not in exclude]
+    for root, dirs, files in project_root.walk(top_down=True):
+        dirs[:] = [
+            d
+            for d in dirs
+            if d not in ALWAYS_EXCLUDE_DIRS
+            and root / d not in exclude_absolute
+        ]
         py_files = [root / f for f in files if f.endswith(".py")]
         defs = [
             cd
@@ -56,24 +59,24 @@ def run(
 
     env_example_txt = build_env_example(fields)
 
-    target_file = dir / ".env.example"
+    target_file = project_root / ".env.example"
     target_file.write_text(env_example_txt)
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--project-root", default=None, type=Path)
     parser.add_argument(
         "--exclude-dir",
         default=None,
-        type=str,
+        type=Path,
         action="append",
     )
     namespace = parser.parse_args()
 
+    cwd = Path.cwd()
     run(
-        dir=namespace.project_root,
-        exclude_dirs=namespace.exclude_dir,
+        project_root=cwd,
+        exclude_relative=namespace.exclude_dir,
     )
 
 

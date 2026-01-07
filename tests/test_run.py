@@ -5,19 +5,23 @@ import pytest
 
 from env_example.main import run
 
-Case = namedtuple("Case", ["name", "project_root", "exclude_dirs"])
+Case = namedtuple("Case", ["name", "exclude_dirs"])
+
 
 test_cases: list[Case] = [
-    Case(name="prefix", project_root=None, exclude_dirs=None),
-    Case(name="alias_import", project_root=None, exclude_dirs=None),
-    Case(name="module_import", project_root=None, exclude_dirs=None),
-    Case(name="selective_import", project_root=None, exclude_dirs=None),
-    Case(name="multiple_settings", project_root=None, exclude_dirs=None),
-    Case(name="default_exclude", project_root=None, exclude_dirs=None),
+    Case(name="prefix", exclude_dirs=None),
+    Case(name="alias_import", exclude_dirs=None),
+    Case(name="module_import", exclude_dirs=None),
+    Case(name="selective_import", exclude_dirs=None),
+    Case(name="multiple_settings", exclude_dirs=None),
+    Case(name="default_exclude", exclude_dirs=None),
     Case(
         name="user_exclude",
-        project_root=None,
-        exclude_dirs=["excluded", "other_excluded"],
+        exclude_dirs=[
+            "excluded",
+            "other_excluded",
+            "included/nested_excluded",
+        ],
     ),
 ]
 
@@ -31,7 +35,12 @@ def test_case(request):
 @pytest.fixture
 def run_case(test_case):
     dir_arg = Path(__file__).parent / "cases" / f"{test_case.name}"
-    run(dir_arg, exclude_dirs=test_case.exclude_dirs)
+    exclude_paths = (
+        [dir_arg / p for p in test_case.exclude_dirs]
+        if test_case.exclude_dirs
+        else None
+    )
+    run(project_root=dir_arg, exclude_relative=exclude_paths)
     yield
     example_file = dir_arg / ".env.example"
     example_file.unlink()
@@ -57,7 +66,7 @@ def outcome_env(test_case, run_case):
 
 
 @pytest.mark.parametrize("test_case", test_cases, indirect=True)
-def test_default(
+def test_run(
     run_case,
     expected_env,
     outcome_env,

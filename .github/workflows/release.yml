@@ -2,9 +2,16 @@ name: "Release"
 
 on:
   workflow_dispatch:
+    inputs:
+      tag_name:
+        description: "Tag name to release"
+        required: true
   push:
     tags:
       - "v*.*.*"
+
+permissions:
+  contents: write
 
 jobs:
   release:
@@ -14,6 +21,8 @@ jobs:
         - uses: astral-sh/setup-uv@v7
 
         - uses: softprops/action-gh-release@v2
+          with:
+            tag_name: ${{ github.event.inputs.tag_name || github.ref_name }}
           env:
             GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 

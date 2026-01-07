@@ -15,11 +15,8 @@ jobs:
         - uses: softprops/action-gh-release@v2
           env:
             GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        
+
         - name: Publish Release
-          env:
-            UV_PUBLISH_TOKEN: ${{ secrets.UV_PUBLISH_TOKEN }}
           run: |
             uv build
             uv publish
-          

@@ -14,7 +14,11 @@ test_cases: list[Case] = [
     Case(name="selective_import", project_root=None, exclude_dirs=None),
     Case(name="multiple_settings", project_root=None, exclude_dirs=None),
     Case(name="default_exclude", project_root=None, exclude_dirs=None),
-    Case(name="user_exclude", project_root=None, exclude_dirs=["excluded"]),
+    Case(
+        name="user_exclude",
+        project_root=None,
+        exclude_dirs=["excluded", "other_excluded"],
+    ),
 ]
 
 

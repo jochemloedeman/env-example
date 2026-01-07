@@ -1,15 +1,20 @@
+from collections import namedtuple
 from pathlib import Path
 
 import pytest
 
 from env_example.main import run
 
-test_cases = [
-    "prefix",
-    "alias_import",
-    "module_import",
-    "selective_import",
-    "multiple_settings",
+Case = namedtuple("Case", ["name", "project_root", "exclude_dirs"])
+
+test_cases: list[Case] = [
+    Case(name="prefix", project_root=None, exclude_dirs=None),
+    Case(name="alias_import", project_root=None, exclude_dirs=None),
+    Case(name="module_import", project_root=None, exclude_dirs=None),
+    Case(name="selective_import", project_root=None, exclude_dirs=None),
+    Case(name="multiple_settings", project_root=None, exclude_dirs=None),
+    Case(name="default_exclude", project_root=None, exclude_dirs=None),
+    Case(name="user_exclude", project_root=None, exclude_dirs=["excluded"]),
 ]
 
 
@@ -20,12 +25,11 @@ def test_case(request):
 
 
 @pytest.fixture
-def run_env_example(test_case):
-    dir = Path(__file__).parent / "cases" / f"{test_case}"
-    dir_arg = dir.as_posix()
-    run(dir_arg)
+def run_case(test_case):
+    dir_arg = Path(__file__).parent / "cases" / f"{test_case.name}"
+    run(dir_arg, exclude_dirs=test_case.exclude_dirs)
     yield
-    example_file = dir / ".env.example"
+    example_file = dir_arg / ".env.example"
     example_file.unlink()
 
 
@@ -34,7 +38,7 @@ def expected_env(test_case):
     fp = (
         Path(__file__).parent
         / "cases"
-        / f"{test_case}"
+        / f"{test_case.name}"
         / ".env.example.expected"
     )
     env_example_txt = fp.read_text()
@@ -42,15 +46,15 @@ def expected_env(test_case):
 
 
 @pytest.fixture
-def outcome_env(test_case, run_env_example):
-    fp = Path(__file__).parent / "cases" / f"{test_case}" / ".env.example"
+def outcome_env(test_case, run_case):
+    fp = Path(__file__).parent / "cases" / f"{test_case.name}" / ".env.example"
     env_example_txt = fp.read_text()
     return env_example_txt
 
 
 @pytest.mark.parametrize("test_case", test_cases, indirect=True)
-def test_prefix(
-    run_env_example,
+def test_default(
+    run_case,
     expected_env,
     outcome_env,
 ) -> None:

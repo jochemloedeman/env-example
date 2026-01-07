@@ -1,0 +1,36 @@
+name: "Bump Version"
+
+on:
+  workflow_dispatch:
+    inputs:
+      type:
+        description: "Type of release"
+        required: true
+        default: "patch"
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+      
+permissions:
+  contents: write
+
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v7
+
+      - name: bump version and create tag
+        id: bump_version
+        run: |
+          uv version --bump ${{ github.event.inputs.type }}
+          echo "new_version=$(uv version --short)" >> $GITHUB_OUTPUT
+      
+
+      - uses: stefanzweifel/git-auto-commit-action@v7
+        with:
+          tag_name: v${{ steps.bump_version.outputs.new_version }}      

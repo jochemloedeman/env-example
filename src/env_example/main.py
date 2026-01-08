@@ -1,14 +1,13 @@
 import argparse
-from ast import (
-    ClassDef,
-)
 from collections import defaultdict
 from pathlib import Path
 
 from env_example.ast_utils import (
+    ClassContext,
     SettingField,
+    extract_class_contexts,
     extract_fields_from_settings,
-    extract_settings_from_file,
+    extract_settings_from_defs,
 )
 
 ALWAYS_EXCLUDE_DIRS = {".venv"}
@@ -35,7 +34,7 @@ def run(
         {p.resolve() for p in exclude_relative} if exclude_relative else {}
     )
 
-    settings_defs: list[ClassDef] = []
+    contexts: list[ClassContext] = []
     for root, dirs, files in project_root.walk(top_down=True):
         dirs[:] = [
             d
@@ -44,17 +43,16 @@ def run(
             and root / d not in exclude_absolute
         ]
         py_files = [root / f for f in files if f.endswith(".py")]
-        defs = [
+        dir_contexts = [
             cd
             for file in py_files
-            for cd in extract_settings_from_file(file.read_text())
+            for cd in extract_class_contexts(file.read_text())
         ]
-        settings_defs.extend(defs)
+        contexts.extend(dir_contexts)
 
+    settings = extract_settings_from_defs(contexts=contexts)
     fields: list[SettingField] = [
-        field
-        for cd in settings_defs
-        for field in extract_fields_from_settings(cd)
+        field for cd in settings for field in extract_fields_from_settings(cd)
     ]
 
     env_example_txt = build_env_example(fields)

@@ -21,6 +21,12 @@ ENV_PREFIX_ARG = "env_prefix"
 
 
 @dataclass
+class ClassContext:
+    class_def: ClassDef
+    module: Module
+
+
+@dataclass
 class SettingField:
     name: str
     settings_class: str
@@ -93,22 +99,49 @@ def has_alias_base(cd: ClassDef, module: Module) -> bool:
     return has_aliased_base
 
 
-BASE_CONDITIONS: list[Callable[[ClassDef, Module], bool]] = [
+def has_transitive_base(
+    cd: ClassDef, module: Module, direct_defs: list[ClassDef]
+) -> bool:
+    return False
+
+
+DIRECT_INHERITANCE_CONDITIONS: list[Callable[[ClassDef, Module], bool]] = [
     has_absolute_base,
     has_module_base,
     has_alias_base,
 ]
 
 
-def extract_settings_from_file(module_content: str) -> list[ClassDef]:
+def extract_class_contexts(module_content: str) -> list[ClassContext]:
     module = ast.parse(module_content)
-    defs = [
-        item
+    return [
+        ClassContext(class_def=item, module=module)
         for item in module.body
         if isinstance(item, ClassDef)
-        and any(condition(item, module) for condition in BASE_CONDITIONS)
     ]
-    return defs
+
+
+def extract_settings_from_defs(
+    contexts: list[ClassContext],
+) -> list[ClassDef]:
+    direct_settings = [
+        context.class_def
+        for context in contexts
+        if any(
+            condition(context.class_def, context.module)
+            for condition in DIRECT_INHERITANCE_CONDITIONS
+        )
+    ]
+    transitive_settings = [
+        context.class_def
+        for context in contexts
+        if has_transitive_base(
+            cd=context.class_def,
+            module=context.module,
+            direct_defs=direct_settings,
+        )
+    ]
+    return direct_settings
 
 
 def extract_fields_from_settings(cd: ClassDef) -> list[SettingField]:

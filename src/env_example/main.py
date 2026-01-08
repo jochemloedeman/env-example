@@ -23,6 +23,9 @@ def build_env_example(setting_fields: list[SettingField]) -> str:
         example += f"# {settings_class}" + "\n"
         for field in fields_by_class[settings_class]:
             example += f"{field.prefix or ''}{field.name}=".upper() + "\n"
+        example += "\n"
+
+    example = example.strip()
     return example
 
 
@@ -56,7 +59,6 @@ def run(
     ]
 
     env_example_txt = build_env_example(fields)
-
     target_file = project_root / ".env.example"
     target_file.write_text(env_example_txt)
 

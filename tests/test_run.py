@@ -23,6 +23,7 @@ test_cases: list[Case] = [
             "included/nested_excluded",
         ],
     ),
+    Case(name="transitive_inheritance", exclude_dirs=None),
 ]
 
 

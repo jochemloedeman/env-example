@@ -141,7 +141,7 @@ def extract_settings_from_defs(
             direct_defs=direct_settings,
         )
     ]
-    return direct_settings
+    return [*direct_settings, *transitive_settings]
 
 
 def extract_fields_from_settings(cd: ClassDef) -> list[SettingField]:

@@ -34,7 +34,7 @@ def test_case(request):
 
 @pytest.fixture
 def run_case(test_case):
-    dir_arg = Path(__file__).parent / "cases" / f"{test_case.name}"
+    dir_arg = Path(__file__).parent / "cases" / f"{test_case.name}" / "project"
     exclude_paths = (
         [dir_arg / p for p in test_case.exclude_dirs]
         if test_case.exclude_dirs
@@ -60,7 +60,13 @@ def expected_env(test_case):
 
 @pytest.fixture
 def outcome_env(test_case, run_case):
-    fp = Path(__file__).parent / "cases" / f"{test_case.name}" / ".env.example"
+    fp = (
+        Path(__file__).parent
+        / "cases"
+        / f"{test_case.name}"
+        / "project"
+        / ".env.example"
+    )
     env_example_txt = fp.read_text()
     return env_example_txt
 

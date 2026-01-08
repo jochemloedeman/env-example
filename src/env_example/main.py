@@ -25,7 +25,7 @@ def build_env_example(setting_fields: list[SettingField]) -> str:
             example += f"{field.prefix or ''}{field.name}=".upper() + "\n"
         example += "\n"
 
-    example = example.strip()
+    example = example.removesuffix("\n")
     return example
 
 

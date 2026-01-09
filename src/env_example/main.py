@@ -1,16 +1,17 @@
 import argparse
 from collections import defaultdict
 from pathlib import Path
+from typing import Iterator
 
 from env_example.ast_utils import (
     ClassContext,
     SettingField,
     extract_class_contexts,
     extract_fields_from_settings,
-    extract_settings_from_defs,
+    extract_settings,
 )
 
-ALWAYS_EXCLUDE_DIRS = {".venv"}
+ALWAYS_EXCLUDE_DIRS = {".venv", "site-packages"}
 
 
 def build_env_example(setting_fields: list[SettingField]) -> str:
@@ -29,31 +30,56 @@ def build_env_example(setting_fields: list[SettingField]) -> str:
     return example
 
 
+def walk_project(
+    root: Path,
+    exclude_paths: set[Path],
+) -> Iterator[ClassContext]:
+    def walk_dir(dir: Path, parent_package: str) -> Iterator[ClassContext]:
+        is_package = False
+        for p in dir.iterdir():
+            if p.name == "__init__.py":
+                is_package = True
+                break
+
+        new_parent = (
+            (f"{parent_package}.{dir.name}" if parent_package else dir.name)
+            if is_package
+            else ""
+        )
+
+        for item in dir.iterdir():
+            if item.is_file() and item.suffix == ".py":
+                yield from extract_class_contexts(
+                    item.read_text(),
+                    package=new_parent,
+                )
+            if (
+                item.is_dir()
+                and item.name not in ALWAYS_EXCLUDE_DIRS
+                and item not in exclude_paths
+            ):
+                yield from walk_dir(item, parent_package=parent_package)
+
+    yield from walk_dir(root, parent_package="")
+
+
 def run(
     project_root: Path,
     exclude_relative: list[Path] | None,
 ) -> None:
-    exclude_absolute = (
-        {p.resolve() for p in exclude_relative} if exclude_relative else {}
+    exclude_absolute: set[Path] = (
+        {p.resolve() for p in exclude_relative} if exclude_relative else set()
     )
 
-    contexts: list[ClassContext] = []
-    for root, dirs, files in project_root.walk(top_down=True):
-        dirs[:] = [
-            d
-            for d in dirs
-            if d not in ALWAYS_EXCLUDE_DIRS
-            and root / d not in exclude_absolute
-        ]
-        py_files = [root / f for f in files if f.endswith(".py")]
-        dir_contexts = [
-            cd
-            for file in py_files
-            for cd in extract_class_contexts(file.read_text())
-        ]
-        contexts.extend(dir_contexts)
+    contexts: list[ClassContext] = [
+        context
+        for context in walk_project(
+            project_root,
+            exclude_paths=exclude_absolute,
+        )
+    ]
 
-    settings = extract_settings_from_defs(contexts=contexts)
+    settings = extract_settings(contexts=contexts)
     fields: list[SettingField] = [
         field for cd in settings for field in extract_fields_from_settings(cd)
     ]

@@ -2,7 +2,6 @@ import argparse
 import ast
 from ast import ClassDef, Import, ImportFrom, Module
 from collections import defaultdict
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator
 
@@ -10,19 +9,13 @@ ALWAYS_EXCLUDE_DIRS = {".venv", "site-packages"}
 BASE_SETTINGS_FQN = "pydantic_settings.BaseSettings"
 
 
-@dataclass
-class ModuleContext:
-    module: Module
-    classes: dict[str, ClassDef]
-
-
 def walk_project(
     root: Path,
     exclude_paths: set[Path],
-) -> Iterator[tuple[str, ModuleContext]]:
+) -> Iterator[tuple[str, Module]]:
     def walk_dir(
         dir: Path, parent_package: str
-    ) -> Iterator[tuple[str, ModuleContext]]:
+    ) -> Iterator[tuple[str, Module]]:
         is_package = False
         for p in dir.iterdir():
             if p.name == "__init__.py":
@@ -38,20 +31,9 @@ def walk_project(
         for item in dir.iterdir():
             if item.is_file() and item.suffix == ".py":
                 module = ast.parse(item.read_text())
-                classes = {
-                    body_item.name: body_item
-                    for body_item in module.body
-                    if isinstance(body_item, ClassDef)
-                }
                 module_name = item.name if item.stem != "__init__" else None
                 module_fqn = ".".join(filter(None, [new_parent, module_name]))
-                yield (
-                    module_fqn,
-                    ModuleContext(
-                        module=module,
-                        classes=classes,
-                    ),
-                )
+                yield (module_fqn, module)
 
             if (
                 item.is_dir()
@@ -87,16 +69,14 @@ def _resolve_module_imports(module: Module) -> list[str]:
     return [name.name for mi in module_imports for name in mi.names]
 
 
-def find_implementation(
-    symbol: str, module_mapping: dict[str, ModuleContext]
-) -> str:
+def find_implementation(symbol: str, module_mapping: dict[str, Module]) -> str:
     return ""
 
 
 def find_parent(
     class_def: ClassDef,
     class_fqn: str,
-    module_hierarchy: dict[str, ModuleContext],
+    module_hierarchy: dict[str, Module],
 ) -> str:
     return ""
 
@@ -119,7 +99,7 @@ def run(
     exclude_absolute: set[Path] = (
         {p.resolve() for p in exclude_relative} if exclude_relative else set()
     )
-    module_hierarchy: dict[str, ModuleContext] = {}
+    module_hierarchy: dict[str, Module] = {}
     for fqn, context in walk_project(
         root=project_root,
         exclude_paths=exclude_absolute,
@@ -128,8 +108,10 @@ def run(
 
     inheritance = InheritanceHierarchy()
     for fqn in module_hierarchy:
-        mc = module_hierarchy[fqn]
-        for class_fqn, class_def in mc.classes.items():
+        module = module_hierarchy[fqn]
+        classes = _filter_module_by_type(module, ClassDef)
+        for class_def in classes:
+            class_fqn = ".".join((fqn, class_def.name))
             parent = find_parent(
                 class_def=class_def,
                 class_fqn=class_fqn,

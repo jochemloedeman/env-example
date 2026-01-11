@@ -12,8 +12,7 @@ from ast import (
     Name,
 )
 from dataclasses import dataclass
-from functools import partial
-from typing import Callable, Iterator
+from typing import Iterator
 
 PYDANTIC_SETTINGS_PACKAGE = "pydantic_settings"
 PYDANTIC_SETTINGS_BASE = "BaseSettings"
@@ -22,10 +21,10 @@ ENV_PREFIX_ARG = "env_prefix"
 
 
 @dataclass
-class ClassContext:
-    class_def: ClassDef
+class ModuleContext:
     module: Module
-    package: str | None
+    classes: list[ClassDef]
+    package: str
 
 
 @dataclass
@@ -35,154 +34,211 @@ class SettingField:
     prefix: str | None = None
 
 
-def has_module_base(
-    cd: ClassDef,
-    module: Module,
-    import_package: str,
-    import_class: str,
+def _has_qualified_base(
+    class_def: ClassDef,
+    base_class: str,
+    base_package: str,
 ) -> bool:
-    """Check if class uses: import pydantic_settings; class X(pydantic_settings.BaseSettings)"""
-    # Check for: import pydantic_settings
-    has_module_import = any(
-        isinstance(item, Import)
-        and any(a.name == import_package for a in item.names)
-        for item in module.body
-    )
-    if not has_module_import:
-        return False
-
-    # Check for: pydantic_settings.BaseSettings in bases
-    has_qualified_base = any(
+    return any(
         isinstance(base, Attribute)
-        and base.attr == import_class
+        and base.attr == base_class
         and isinstance(base.value, Name)
-        and base.value.id == import_package
-        for base in cd.bases
+        and base.value.id == base_package
+        for base in class_def.bases
     )
-    return has_qualified_base
 
 
-def has_absolute_import_base(
-    cd: ClassDef,
-    module: Module,
-    import_package: str,
-    import_class: str,
-) -> bool:
-    """Check if class uses: from pydantic_settings import BaseSettings; class X(BaseSettings)"""
-    # Check for: from pydantic_settings import BaseSettings
-    has_absolute_import = any(
-        isinstance(item, ImportFrom)
-        and item.module == import_package
-        and any(name.name == import_class for name in item.names)
+def _has_full_import(module: Module, import_name: str) -> bool:
+    return any(
+        isinstance(item, Import)
+        and any(a.name == import_name for a in item.names)
         for item in module.body
     )
-    if not has_absolute_import:
-        return False
-
-    # Check for: BaseSettings in bases
-    has_direct_base = any(
-        isinstance(base, Name) and base.id == import_class for base in cd.bases
-    )
-    return has_direct_base
 
 
-def has_alias_base(
-    cd: ClassDef,
-    module: Module,
-    import_package: str,
+def extract_children_with_module_import_base(
+    context: ModuleContext,
     import_class: str,
+    import_package: str,
+) -> list[ClassDef]:
+    if not _has_full_import(context.module, import_package):
+        return []
+
+    children = [
+        c
+        for c in context.classes
+        if _has_qualified_base(
+            class_def=c, base_class=import_class, base_package=import_package
+        )
+    ]
+    return children
+
+
+def _has_selective_import(
+    module: Module,
+    import_name: str,
+    from_name: str,
 ) -> bool:
-    """Check if class uses: import pydantic_settings as ps; class X(ps.BaseSettings)"""
-    # Collect aliases for pydantic_settings
-    aliases = [
+    return any(
+        isinstance(item, ImportFrom)
+        and item.module == from_name
+        and any(name.name == import_name for name in item.names)
+        for item in module.body
+    )
+
+
+def extract_children_with_class_import_base(
+    context: ModuleContext,
+    import_class: str,
+    import_package: str,
+) -> list[ClassDef]:
+    if not _has_selective_import(
+        context.module,
+        import_name=import_class,
+        from_name=import_package,
+    ):
+        return []
+
+    children = [
+        c for c in context.classes if _has_direct_base(c, import_class)
+    ]
+
+    return children
+
+
+def _has_direct_base(class_def: ClassDef, base_class: str) -> bool:
+    return any(
+        isinstance(base, Name) and base.id == base_class
+        for base in class_def.bases
+    )
+
+
+def get_package_aliases(module: Module, package: str) -> list[str]:
+    return [
         alias.asname
         for item in module.body
         if isinstance(item, Import)
         for alias in item.names
-        if alias.name == import_package and alias.asname is not None
+        if alias.name == package and alias.asname is not None
     ]
-    if not aliases:
-        return False
-
-    # Check for: <alias>.BaseSettings in bases
-    has_aliased_base = any(
-        isinstance(base, Attribute)
-        and base.attr == import_class
-        and isinstance(base.value, Name)
-        and base.value.id in aliases
-        for base in cd.bases
-    )
-    return has_aliased_base
 
 
-def has_transitive_base(
-    cd: ClassDef, module: Module, direct_settings: list[ClassContext]
+def _has_aliased_base(
+    class_def: ClassDef,
+    aliased_package: str,
+    base_class: str,
 ) -> bool:
     return any(
-        has_absolute_import_base(
-            cd=cd,
-            module=module,
-            import_package=ds.package,
-            import_class=ds.class_def.name,
-        )
-        for ds in direct_settings
+        isinstance(base, Attribute)
+        and base.attr == base_class
+        and isinstance(base.value, Name)
+        and base.value.id == aliased_package
+        for base in class_def.bases
     )
 
 
-DIRECT_INHERITANCE_CONDITIONS: list[Callable[[ClassDef, Module], bool]] = [
-    partial(
-        has_absolute_import_base,
-        import_package=PYDANTIC_SETTINGS_PACKAGE,
-        import_class=PYDANTIC_SETTINGS_BASE,
-    ),
-    partial(
-        has_module_base,
-        import_package=PYDANTIC_SETTINGS_PACKAGE,
-        import_class=PYDANTIC_SETTINGS_BASE,
-    ),
-    partial(
-        has_alias_base,
-        import_module=PYDANTIC_SETTINGS_PACKAGE,
-        import_class=PYDANTIC_SETTINGS_BASE,
-    ),
-]
+def extract_children_with_package_alias_base(
+    context: ModuleContext,
+    import_class: str,
+    import_package: str,
+) -> list[ClassDef]:
+    aliases = get_package_aliases(
+        context.module,
+        import_package,
+    )
+    if not aliases:
+        return []
 
-
-def extract_class_contexts(
-    module_content: str, package: str | None
-) -> Iterator[ClassContext]:
-    module = ast.parse(module_content)
-    for item in module.body:
-        if isinstance(item, ClassDef):
-            yield ClassContext(
-                class_def=item,
-                module=module,
-                package=package,
+    children = [
+        c
+        for c in context.classes
+        if any(
+            _has_aliased_base(
+                class_def=c,
+                aliased_package=ap,
+                base_class=import_class,
             )
+            for ap in aliases
+        )
+    ]
+
+    return children
+
+
+# def has_transitive_base(
+#     cd: ClassDef, module: Module, direct_settings: list[ModuleContext]
+# ) -> bool:
+#     return any(
+#         has_absolute_import_base(
+#             cd=cd,
+#             module=module,
+#             import_package=ds.package,
+#             import_class="",
+#         )
+#         for ds in direct_settings
+#     )
+
+
+def extract_module_contexts(
+    module_content: str, package: str
+) -> Iterator[ModuleContext]:
+    module = ast.parse(module_content)
+    classes = [item for item in module.body if isinstance(item, ClassDef)]
+    yield ModuleContext(
+        module=module,
+        classes=classes,
+        package=package,
+    )
+
+
+@dataclass
+class ClassContext:
+    class_def: ClassDef
+    module: Module
 
 
 def extract_settings(
-    contexts: list[ClassContext],
+    module_contexts: list[ModuleContext],
 ) -> list[ClassDef]:
-    direct_contexts: list[ClassContext] = [
-        context
-        for context in contexts
-        if any(
-            condition(context.class_def, context.module)
-            for condition in DIRECT_INHERITANCE_CONDITIONS
+    # direct inheritance settings
+    class_import = [
+        cd
+        for context in module_contexts
+        for cd in extract_children_with_class_import_base(
+            context=context,
+            import_class=PYDANTIC_SETTINGS_BASE,
+            import_package=PYDANTIC_SETTINGS_PACKAGE,
         )
     ]
-    direct_settings = [context.class_def for context in direct_contexts]
-    transitive_settings = [
-        context.class_def
-        for context in contexts
-        if has_transitive_base(
-            cd=context.class_def,
-            module=context.module,
-            direct_settings=direct_contexts,
+    module_import = [
+        cd
+        for context in module_contexts
+        for cd in extract_children_with_module_import_base(
+            context=context,
+            import_class=PYDANTIC_SETTINGS_BASE,
+            import_package=PYDANTIC_SETTINGS_PACKAGE,
         )
     ]
-    return [*direct_settings, *transitive_settings]
+    aliased_module_import = [
+        cd
+        for context in module_contexts
+        for cd in extract_children_with_package_alias_base(
+            context=context,
+            import_class=PYDANTIC_SETTINGS_BASE,
+            import_package=PYDANTIC_SETTINGS_PACKAGE,
+        )
+    ]
+    direct_settings: list[ClassDef] = [
+        *class_import,
+        *module_import,
+        *aliased_module_import,
+    ]
+
+    # same-module transitive inheritance
+
+    # same-package transitive inheritance
+
+    return [*direct_settings]
 
 
 def extract_fields_from_settings(cd: ClassDef) -> list[SettingField]:

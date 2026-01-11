@@ -95,7 +95,7 @@ def find_implementation(
 
 def find_parent(
     class_def: ClassDef,
-    module_fqn: str,
+    class_fqn: str,
     module_hierarchy: dict[str, ModuleContext],
 ) -> str:
     return ""
@@ -129,11 +129,10 @@ def run(
     inheritance = InheritanceHierarchy()
     for fqn in module_hierarchy:
         mc = module_hierarchy[fqn]
-        for class_fqn in mc.classes:
-            class_def = mc.classes[class_fqn]
+        for class_fqn, class_def in mc.classes.items():
             parent = find_parent(
                 class_def=class_def,
-                module_fqn=fqn,
+                class_fqn=class_fqn,
                 module_hierarchy=module_hierarchy,
             )
             inheritance.add_relation(parent=parent, child=class_fqn)

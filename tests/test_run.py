@@ -72,7 +72,12 @@ def outcome_env(test_case, run_case):
     return env_example_txt
 
 
-@pytest.mark.parametrize("test_case", test_cases, indirect=True)
+@pytest.mark.parametrize(
+    "test_case",
+    test_cases,
+    indirect=True,
+    ids=[case.name for case in test_cases],
+)
 def test_run(
     run_case,
     expected_env,

@@ -34,6 +34,18 @@ class SettingField:
     prefix: str | None = None
 
 
+def get_bases_from_class(cd: ClassDef) -> list[str]:
+    bases: list[str] = []
+    for base in cd.bases:
+        if isinstance(base, Name):
+            # bare name
+            bases.append(base.id)
+        elif isinstance(base, Attribute) and isinstance(base.value, Name):
+            # qualified name
+            bases.append(".".join((base.value.id, base.attr)))
+    return bases
+
+
 def _has_qualified_base(
     class_def: ClassDef,
     base_class: str,

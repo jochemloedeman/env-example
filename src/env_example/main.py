@@ -5,8 +5,30 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Iterator
 
+from env_example.ast_utils import (
+    SettingField,
+    extract_fields_from_settings,
+    get_bases_from_class,
+)
+
 ALWAYS_EXCLUDE_DIRS = {".venv", "site-packages"}
 BASE_SETTINGS_FQN = "pydantic_settings.BaseSettings"
+
+
+def build_env_example(setting_fields: list[SettingField]) -> str:
+    example: str = ""
+    fields_by_class: defaultdict[str, list] = defaultdict(list)
+    for s in setting_fields:
+        fields_by_class[s.settings_class].append(s)
+
+    for settings_class in fields_by_class:
+        example += f"# {settings_class}" + "\n"
+        for field in fields_by_class[settings_class]:
+            example += f"{field.prefix or ''}{field.name}=".upper() + "\n"
+        example += "\n"
+
+    example = example.removesuffix("\n")
+    return example
 
 
 def walk_project(
@@ -28,10 +50,12 @@ def walk_project(
             else ""
         )
 
-        for item in dir.iterdir():
-            if item.is_file() and item.suffix == ".py":
+        for item in sorted(dir.iterdir()):
+            if is_package and item.is_file() and item.suffix == ".py":
                 module = ast.parse(item.read_text())
-                module_name = item.name if item.stem != "__init__" else None
+                module_name = (
+                    stem if (stem := item.stem) != "__init__" else None
+                )
                 module_fqn = ".".join(filter(None, [new_parent, module_name]))
                 yield (module_fqn, module)
 
@@ -49,19 +73,19 @@ def _filter_module_by_type[T](module: Module, type_: type[T]) -> list[T]:
     return [item for item in module.body if isinstance(item, type_)]
 
 
-def _resolve_name_imports(module: Module) -> list[str]:
+def _resolve_name_imports(module: Module) -> list[tuple[str, str]]:
     name_imports = _filter_module_by_type(module, ImportFrom)
-    fqns: list[str] = []
+    fqns: list[tuple[str, str]] = []
     for ni in name_imports:
         if ni.module:
             # absolute import
             for name in ni.names:
-                fqns.append(".".join((ni.module, name.name)))
+                fqns.append((ni.module, name.name))
         else:
             raise NotImplementedError(
                 "Resolving relative imports is not supported yet."
             )
-    return []
+    return fqns
 
 
 def _resolve_module_imports(module: Module) -> list[str]:
@@ -69,16 +93,49 @@ def _resolve_module_imports(module: Module) -> list[str]:
     return [name.name for mi in module_imports for name in mi.names]
 
 
-def find_implementation(symbol: str, module_mapping: dict[str, Module]) -> str:
-    return ""
+def find_source_or_external_import(
+    searched_symbol: str,
+    search_module: str,
+    module_lookup: dict[str, Module],
+) -> str | None:
+    split = searched_symbol.rsplit(".", maxsplit=1)
+    match split:
+        case [symbol_object_name]:
+            symbol_module_ref = None
+        case [symbol_module_ref, symbol_object_name]:
+            pass
+        case _:
+            raise ValueError(
+                f"{searched_symbol} is not a valid symbol in module {search_module}"
+            )
 
+    module = module_lookup.get(search_module)
+    if not module:
+        return ".".join((search_module, searched_symbol))
 
-def find_parent(
-    class_def: ClassDef,
-    class_fqn: str,
-    module_hierarchy: dict[str, Module],
-) -> str:
-    return ""
+    # check if implementation is in the module itself
+    classes = _filter_module_by_type(module, ClassDef)
+    for cd in classes:
+        if cd.name == symbol_object_name:
+            return ".".join((search_module, cd.name))
+
+    # check if the symbol is imported - name import
+    name_imports = _resolve_name_imports(module)
+    for import_mod, import_name in name_imports:
+        if import_name == symbol_object_name:
+            return find_source_or_external_import(
+                import_name, import_mod, module_lookup
+            )
+
+    # check if the symbol is imported - module import
+    module_imports = _resolve_module_imports(module)
+    for mi in module_imports:
+        if mi == symbol_module_ref:
+            return find_source_or_external_import(
+                symbol_object_name, mi, module_lookup
+            )
+
+    return None
 
 
 class InheritanceHierarchy:
@@ -88,8 +145,12 @@ class InheritanceHierarchy:
     def add_relation(self, parent: str, child: str):
         self._children[parent].add(child)
 
-    def compute_transitive_closure(self) -> dict[str, str]:
-        return {}
+    def transitive_subclasses(self, class_name: str) -> set[str]:
+        reachable = set()
+        for child in self._children[class_name]:
+            reachable.add(child)
+            reachable.update(self.transitive_subclasses(child))
+        return reachable
 
 
 def run(
@@ -100,11 +161,11 @@ def run(
         {p.resolve() for p in exclude_relative} if exclude_relative else set()
     )
     module_hierarchy: dict[str, Module] = {}
-    for fqn, context in walk_project(
+    for fqn, module in walk_project(
         root=project_root,
         exclude_paths=exclude_absolute,
     ):
-        module_hierarchy[fqn] = context
+        module_hierarchy[fqn] = module
 
     inheritance = InheritanceHierarchy()
     for fqn in module_hierarchy:
@@ -112,16 +173,34 @@ def run(
         classes = _filter_module_by_type(module, ClassDef)
         for class_def in classes:
             class_fqn = ".".join((fqn, class_def.name))
-            parent = find_parent(
-                class_def=class_def,
-                class_fqn=class_fqn,
-                module_hierarchy=module_hierarchy,
-            )
-            inheritance.add_relation(parent=parent, child=class_fqn)
+            bases = get_bases_from_class(class_def)
+            for base in bases:
+                parent = find_source_or_external_import(
+                    searched_symbol=base,
+                    search_module=fqn,
+                    module_lookup=module_hierarchy,
+                )
+                if parent:
+                    inheritance.add_relation(
+                        parent=parent,
+                        child=class_fqn,
+                    )
 
-    transitive_closure = inheritance.compute_transitive_closure()
-    settings_fqns = transitive_closure[BASE_SETTINGS_FQN]
-    settings_fqns
+    settings_subclasses = inheritance.transitive_subclasses(BASE_SETTINGS_FQN)
+    fields: list[SettingField] = []
+    for fqn in sorted(settings_subclasses):
+        module_part, class_part = fqn.rsplit(".", maxsplit=1)
+        module = module_hierarchy[module_part]
+        class_def = next(
+            cd
+            for cd in _filter_module_by_type(module, ClassDef)
+            if cd.name == class_part
+        )
+        fields.extend(extract_fields_from_settings(class_def))
+
+    env_example_txt = build_env_example(fields)
+    target_file = project_root / ".env.example"
+    target_file.write_text(env_example_txt)
 
 
 def main() -> None:

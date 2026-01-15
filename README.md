@@ -1,5 +1,4 @@
 <div align="center">
-
 <h1>
   <br/>env-example
 </h1>
@@ -8,9 +7,11 @@
 </a>
 <a href="https://pypi.org/project/fastapi" target="_blank">
     <img src="https://github.com/jochemloedeman/env-example/actions/workflows/test.yml/badge.svg" alt="Package version">
+</a>
 
+<br/>
+<br/>
 </div>
-
 
 Creates an `.env.example` file for your monorepo, based on all [Pydantic settings](https://docs.pydantic.dev/latest/concepts/pydantic_settings/) classes found in your project. Env-example uses the abstract syntax tree of your project instead of runtime introspection, to avoid side effects and be less prone to import errors.
 

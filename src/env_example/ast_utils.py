@@ -6,18 +6,20 @@ from ast import (
     Call,
     ClassDef,
     Constant,
-    Import,
-    ImportFrom,
-    Module,
     Name,
 )
 from dataclasses import dataclass
-from typing import Callable
+from enum import Enum
 
 PYDANTIC_SETTINGS_PACKAGE = "pydantic_settings"
 PYDANTIC_SETTINGS_BASE = "BaseSettings"
 SETTINGS_CONFIG_CLASS = "SettingsConfigDict"
 ENV_PREFIX_ARG = "env_prefix"
+
+
+class ImportType(Enum):
+    NAME = "name"
+    MODULE = "module"
 
 
 @dataclass
@@ -27,88 +29,57 @@ class SettingField:
     prefix: str | None = None
 
 
-def has_module_base(cd: ClassDef, module: Module) -> bool:
-    """Check if class uses: import pydantic_settings; class X(pydantic_settings.BaseSettings)"""
-    # Check for: import pydantic_settings
-    has_module_import = any(
-        isinstance(item, Import)
-        and any(a.name == PYDANTIC_SETTINGS_PACKAGE for a in item.names)
-        for item in module.body
-    )
-    if not has_module_import:
-        return False
-
-    # Check for: pydantic_settings.BaseSettings in bases
-    has_qualified_base = any(
-        isinstance(base, Attribute)
-        and base.attr == PYDANTIC_SETTINGS_BASE
-        and isinstance(base.value, Name)
-        and base.value.id == PYDANTIC_SETTINGS_PACKAGE
-        for base in cd.bases
-    )
-    return has_qualified_base
+@dataclass
+class ImportItem:
+    module: str
+    name: str | None
+    alias: str | None
 
 
-def has_absolute_base(cd: ClassDef, module: Module) -> bool:
-    """Check if class uses: from pydantic_settings import BaseSettings; class X(BaseSettings)"""
-    # Check for: from pydantic_settings import BaseSettings
-    has_absolute_import = any(
-        isinstance(item, ImportFrom)
-        and item.module == PYDANTIC_SETTINGS_PACKAGE
-        and any(name.name == PYDANTIC_SETTINGS_BASE for name in item.names)
-        for item in module.body
-    )
-    if not has_absolute_import:
-        return False
+def resolve_import_statements(module: ast.Module) -> list[ImportItem]:
+    imports: list[ImportItem] = []
+    for item in module.body:
+        if isinstance(item, ast.Import):
+            imports.extend(
+                [
+                    ImportItem(
+                        module=name.name,
+                        alias=name.asname,
+                        name=None,
+                    )
+                    for name in item.names
+                ]
+            )
+        elif isinstance(item, ast.ImportFrom):
+            imports.extend(
+                [
+                    ImportItem(
+                        module=item.module,
+                        name=name.name,
+                        alias=name.asname,
+                    )
+                    for name in item.names
+                    if item.module
+                ]
+            )
 
-    # Check for: BaseSettings in bases
-    has_direct_base = any(
-        isinstance(base, Name) and base.id == PYDANTIC_SETTINGS_BASE
-        for base in cd.bases
-    )
-    return has_direct_base
-
-
-def has_alias_base(cd: ClassDef, module: Module) -> bool:
-    """Check if class uses: import pydantic_settings as ps; class X(ps.BaseSettings)"""
-    # Collect aliases for pydantic_settings
-    aliases = [
-        alias.asname
-        for item in module.body
-        if isinstance(item, Import)
-        for alias in item.names
-        if alias.name == PYDANTIC_SETTINGS_PACKAGE and alias.asname is not None
-    ]
-    if not aliases:
-        return False
-
-    # Check for: <alias>.BaseSettings in bases
-    has_aliased_base = any(
-        isinstance(base, Attribute)
-        and base.attr == PYDANTIC_SETTINGS_BASE
-        and isinstance(base.value, Name)
-        and base.value.id in aliases
-        for base in cd.bases
-    )
-    return has_aliased_base
+    return imports
 
 
-BASE_CONDITIONS: list[Callable[[ClassDef, Module], bool]] = [
-    has_absolute_base,
-    has_module_base,
-    has_alias_base,
-]
+def filter_module_by_type[T](module: ast.Module, type_: type[T]) -> list[T]:
+    return [item for item in module.body if isinstance(item, type_)]
 
 
-def extract_settings_from_file(module_content: str) -> list[ClassDef]:
-    module = ast.parse(module_content)
-    defs = [
-        item
-        for item in module.body
-        if isinstance(item, ClassDef)
-        and any(condition(item, module) for condition in BASE_CONDITIONS)
-    ]
-    return defs
+def get_bases_from_class(cd: ClassDef) -> list[str]:
+    bases: list[str] = []
+    for base in cd.bases:
+        if isinstance(base, Name):
+            # bare name
+            bases.append(base.id)
+        elif isinstance(base, Attribute) and isinstance(base.value, Name):
+            # qualified name
+            bases.append(".".join((base.value.id, base.attr)))
+    return bases
 
 
 def extract_fields_from_settings(cd: ClassDef) -> list[SettingField]:

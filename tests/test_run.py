@@ -18,11 +18,12 @@ test_cases: list[Case] = [
     Case(
         name="user_exclude",
         exclude_dirs=[
-            "excluded",
-            "other_excluded",
-            "included/nested_excluded",
+            "package/excluded",
+            "package/other_excluded",
+            "package/included/nested_excluded",
         ],
     ),
+    Case(name="transitive_inheritance", exclude_dirs=None),
 ]
 
 
@@ -34,7 +35,7 @@ def test_case(request):
 
 @pytest.fixture
 def run_case(test_case):
-    dir_arg = Path(__file__).parent / "cases" / f"{test_case.name}"
+    dir_arg = Path(__file__).parent / "cases" / f"{test_case.name}" / "project"
     exclude_paths = (
         [dir_arg / p for p in test_case.exclude_dirs]
         if test_case.exclude_dirs
@@ -60,12 +61,23 @@ def expected_env(test_case):
 
 @pytest.fixture
 def outcome_env(test_case, run_case):
-    fp = Path(__file__).parent / "cases" / f"{test_case.name}" / ".env.example"
+    fp = (
+        Path(__file__).parent
+        / "cases"
+        / f"{test_case.name}"
+        / "project"
+        / ".env.example"
+    )
     env_example_txt = fp.read_text()
     return env_example_txt
 
 
-@pytest.mark.parametrize("test_case", test_cases, indirect=True)
+@pytest.mark.parametrize(
+    "test_case",
+    test_cases,
+    indirect=True,
+    ids=[case.name for case in test_cases],
+)
 def test_run(
     run_case,
     expected_env,

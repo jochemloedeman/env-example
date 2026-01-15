@@ -9,11 +9,17 @@ from ast import (
     Name,
 )
 from dataclasses import dataclass
+from enum import Enum
 
 PYDANTIC_SETTINGS_PACKAGE = "pydantic_settings"
 PYDANTIC_SETTINGS_BASE = "BaseSettings"
 SETTINGS_CONFIG_CLASS = "SettingsConfigDict"
 ENV_PREFIX_ARG = "env_prefix"
+
+
+class ImportType(Enum):
+    NAME = "name"
+    MODULE = "module"
 
 
 @dataclass
@@ -24,19 +30,19 @@ class SettingField:
 
 
 @dataclass
-class Import:
+class ImportItem:
     module: str
     name: str | None
     alias: str | None
 
 
-def resolve_import_statements(module: ast.Module) -> list[Import]:
-    imports: list[Import] = []
+def resolve_import_statements(module: ast.Module) -> list[ImportItem]:
+    imports: list[ImportItem] = []
     for item in module.body:
         if isinstance(item, ast.Import):
             imports.extend(
                 [
-                    Import(
+                    ImportItem(
                         module=name.name,
                         alias=name.asname,
                         name=None,
@@ -47,8 +53,10 @@ def resolve_import_statements(module: ast.Module) -> list[Import]:
         elif isinstance(item, ast.ImportFrom):
             imports.extend(
                 [
-                    Import(
-                        module=item.module, name=name.name, alias=name.asname
+                    ImportItem(
+                        module=item.module,
+                        name=name.name,
+                        alias=name.asname,
                     )
                     for name in item.names
                     if item.module

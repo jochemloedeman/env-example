@@ -31,15 +31,11 @@ class InheritanceHierarchy:
         return reachable
 
 
-def build_env_example(setting_fields: list[SettingField]) -> str:
+def build_env_example(fields_per_class: dict[str, list[SettingField]]) -> str:
     example: str = ""
-    fields_by_class: defaultdict[str, list] = defaultdict(list)
-    for s in setting_fields:
-        fields_by_class[s.settings_class].append(s)
-
-    for settings_class in fields_by_class:
-        example += f"# {settings_class}" + "\n"
-        for field in fields_by_class[settings_class]:
+    for class_name, fields in fields_per_class.items():
+        example += f"# {class_name}" + "\n"
+        for field in fields:
             example += f"{field.prefix or ''}{field.name}=".upper() + "\n"
         example += "\n"
 
@@ -96,22 +92,18 @@ def find_source_or_external_import(
             symbol_module_ref = None
         case [symbol_module_ref, symbol_object_name]:
             pass
-        case _:
-            raise ValueError(
-                f"{searched_symbol} is not a valid symbol in module {search_module}"
-            )
 
     module = module_lookup.get(search_module)
     if not module:
         return ".".join((search_module, searched_symbol))
 
-    # check if implementation is in the module itself
+    # implementation in this mdule
     classes = filter_module_by_type(module, ast.ClassDef)
     for cd in classes:
         if cd.name == symbol_object_name:
             return ".".join((search_module, cd.name))
 
-    # check if the symbol is imported
+    # symbol is imported
     imports = resolve_import_statements(module)
     for imp in imports:
         if imp.name and imp.name == symbol_object_name:
@@ -141,6 +133,7 @@ def run(
     exclude_absolute: set[Path] = (
         {p.resolve() for p in exclude_relative} if exclude_relative else set()
     )
+
     module_hierarchy: dict[str, ast.Module] = {}
     for fqn, module in walk_project(
         root=project_root,
@@ -168,7 +161,7 @@ def run(
                     )
 
     settings_subclasses = inheritance.transitive_subclasses(BASE_SETTINGS_FQN)
-    fields: list[SettingField] = []
+    fields_per_class: dict[str, list[SettingField]] = {}
     for fqn in sorted(settings_subclasses):
         module_part, class_part = fqn.rsplit(".", maxsplit=1)
         module = module_hierarchy[module_part]
@@ -177,9 +170,11 @@ def run(
             for cd in filter_module_by_type(module, ast.ClassDef)
             if cd.name == class_part
         )
-        fields.extend(extract_fields_from_settings(class_def))
+        fields_per_class[class_def.name] = extract_fields_from_settings(
+            class_def
+        )
 
-    env_example_txt = build_env_example(fields)
+    env_example_txt = build_env_example(fields_per_class)
     target_file = project_root / ".env.example"
     target_file.write_text(env_example_txt)
 

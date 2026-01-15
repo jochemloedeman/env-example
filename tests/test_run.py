@@ -18,9 +18,9 @@ test_cases: list[Case] = [
     Case(
         name="user_exclude",
         exclude_dirs=[
-            "excluded",
-            "other_excluded",
-            "included/nested_excluded",
+            "package/excluded",
+            "package/other_excluded",
+            "package/included/nested_excluded",
         ],
     ),
     Case(name="transitive_inheritance", exclude_dirs=None),

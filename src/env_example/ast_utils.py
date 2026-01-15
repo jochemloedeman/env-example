@@ -1,3 +1,4 @@
+import ast
 from ast import (
     AnnAssign,
     Assign,
@@ -20,6 +21,45 @@ class SettingField:
     name: str
     settings_class: str
     prefix: str | None = None
+
+
+@dataclass
+class Import:
+    module: str
+    name: str | None
+    alias: str | None
+
+
+def resolve_import_statements(module: ast.Module) -> list[Import]:
+    imports: list[Import] = []
+    for item in module.body:
+        if isinstance(item, ast.Import):
+            imports.extend(
+                [
+                    Import(
+                        module=name.name,
+                        alias=name.asname,
+                        name=None,
+                    )
+                    for name in item.names
+                ]
+            )
+        elif isinstance(item, ast.ImportFrom):
+            imports.extend(
+                [
+                    Import(
+                        module=item.module, name=name.name, alias=name.asname
+                    )
+                    for name in item.names
+                    if item.module
+                ]
+            )
+
+    return imports
+
+
+def filter_module_by_type[T](module: ast.Module, type_: type[T]) -> list[T]:
+    return [item for item in module.body if isinstance(item, type_)]
 
 
 def get_bases_from_class(cd: ClassDef) -> list[str]:

@@ -1,18 +1,34 @@
 import argparse
 import ast
 from collections import defaultdict
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator
 
 from env_example.ast_utils import (
     SettingField,
     extract_fields_from_settings,
+    filter_module_by_type,
     get_bases_from_class,
+    resolve_import_statements,
 )
 
 ALWAYS_EXCLUDE_DIRS = {".venv", "site-packages"}
 BASE_SETTINGS_FQN = "pydantic_settings.BaseSettings"
+
+
+class InheritanceHierarchy:
+    def __init__(self) -> None:
+        self._children: defaultdict[str, set] = defaultdict(set)
+
+    def add_relation(self, parent: str, child: str):
+        self._children[parent].add(child)
+
+    def transitive_subclasses(self, class_name: str) -> set[str]:
+        reachable = set()
+        for child in self._children[class_name]:
+            reachable.add(child)
+            reachable.update(self.transitive_subclasses(child))
+        return reachable
 
 
 def build_env_example(setting_fields: list[SettingField]) -> str:
@@ -69,65 +85,6 @@ def walk_project(
     yield from walk_dir(root, parent_package="")
 
 
-def _filter_module_by_type[T](module: ast.Module, type_: type[T]) -> list[T]:
-    return [item for item in module.body if isinstance(item, type_)]
-
-
-@dataclass
-class Import:
-    module: str
-    name: str | None
-    alias: str | None
-
-
-def _resolve_name_imports(module: ast.Module) -> list[tuple[str, str]]:
-    name_imports = _filter_module_by_type(module, ast.ImportFrom)
-    fqns: list[tuple[str, str]] = []
-    for ni in name_imports:
-        if ni.module:
-            # absolute import
-            for name in ni.names:
-                fqns.append((ni.module, name.name))
-        else:
-            raise NotImplementedError(
-                "Resolving relative imports is not supported yet."
-            )
-    return fqns
-
-
-def _resolve_module_imports(module: ast.Module) -> list[str]:
-    module_imports = _filter_module_by_type(module, ast.Import)
-    return [name.name for mi in module_imports for name in mi.names]
-
-
-def resolve_import_statements(module: ast.Module) -> list[Import]:
-    imports: list[Import] = []
-    for item in module.body:
-        if isinstance(item, ast.Import):
-            imports.extend(
-                [
-                    Import(
-                        module=name.name,
-                        alias=name.asname,
-                        name=None,
-                    )
-                    for name in item.names
-                ]
-            )
-        elif isinstance(item, ast.ImportFrom):
-            imports.extend(
-                [
-                    Import(
-                        module=item.module, name=name.name, alias=name.asname
-                    )
-                    for name in item.names
-                    if item.module
-                ]
-            )
-
-    return imports
-
-
 def find_source_or_external_import(
     searched_symbol: str,
     search_module: str,
@@ -149,7 +106,7 @@ def find_source_or_external_import(
         return ".".join((search_module, searched_symbol))
 
     # check if implementation is in the module itself
-    classes = _filter_module_by_type(module, ast.ClassDef)
+    classes = filter_module_by_type(module, ast.ClassDef)
     for cd in classes:
         if cd.name == symbol_object_name:
             return ".".join((search_module, cd.name))
@@ -158,6 +115,7 @@ def find_source_or_external_import(
     imports = resolve_import_statements(module)
     for imp in imports:
         if imp.name and imp.name == symbol_object_name:
+            # name import
             return find_source_or_external_import(
                 searched_symbol=imp.name,
                 search_module=imp.module,
@@ -166,6 +124,7 @@ def find_source_or_external_import(
         elif not imp.name and (
             imp.module == symbol_module_ref or imp.alias == symbol_module_ref
         ):
+            # module import
             return find_source_or_external_import(
                 searched_symbol=symbol_object_name,
                 search_module=imp.module,
@@ -173,21 +132,6 @@ def find_source_or_external_import(
             )
 
     return None
-
-
-class InheritanceHierarchy:
-    def __init__(self) -> None:
-        self._children: defaultdict[str, set] = defaultdict(set)
-
-    def add_relation(self, parent: str, child: str):
-        self._children[parent].add(child)
-
-    def transitive_subclasses(self, class_name: str) -> set[str]:
-        reachable = set()
-        for child in self._children[class_name]:
-            reachable.add(child)
-            reachable.update(self.transitive_subclasses(child))
-        return reachable
 
 
 def run(
@@ -207,7 +151,7 @@ def run(
     inheritance = InheritanceHierarchy()
     for fqn in module_hierarchy:
         module = module_hierarchy[fqn]
-        classes = _filter_module_by_type(module, ast.ClassDef)
+        classes = filter_module_by_type(module, ast.ClassDef)
         for class_def in classes:
             class_fqn = ".".join((fqn, class_def.name))
             bases = get_bases_from_class(class_def)
@@ -230,7 +174,7 @@ def run(
         module = module_hierarchy[module_part]
         class_def = next(
             cd
-            for cd in _filter_module_by_type(module, ast.ClassDef)
+            for cd in filter_module_by_type(module, ast.ClassDef)
             if cd.name == class_part
         )
         fields.extend(extract_fields_from_settings(class_def))

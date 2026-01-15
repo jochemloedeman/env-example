@@ -1,7 +1,7 @@
 import argparse
 import ast
-from ast import ClassDef, Import, ImportFrom, Module
 from collections import defaultdict
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator
 
@@ -34,10 +34,10 @@ def build_env_example(setting_fields: list[SettingField]) -> str:
 def walk_project(
     root: Path,
     exclude_paths: set[Path],
-) -> Iterator[tuple[str, Module]]:
+) -> Iterator[tuple[str, ast.Module]]:
     def walk_dir(
         dir: Path, parent_package: str
-    ) -> Iterator[tuple[str, Module]]:
+    ) -> Iterator[tuple[str, ast.Module]]:
         is_package = False
         for p in dir.iterdir():
             if p.name == "__init__.py":
@@ -69,12 +69,19 @@ def walk_project(
     yield from walk_dir(root, parent_package="")
 
 
-def _filter_module_by_type[T](module: Module, type_: type[T]) -> list[T]:
+def _filter_module_by_type[T](module: ast.Module, type_: type[T]) -> list[T]:
     return [item for item in module.body if isinstance(item, type_)]
 
 
-def _resolve_name_imports(module: Module) -> list[tuple[str, str]]:
-    name_imports = _filter_module_by_type(module, ImportFrom)
+@dataclass
+class Import:
+    module: str
+    name: str | None
+    alias: str | None
+
+
+def _resolve_name_imports(module: ast.Module) -> list[tuple[str, str]]:
+    name_imports = _filter_module_by_type(module, ast.ImportFrom)
     fqns: list[tuple[str, str]] = []
     for ni in name_imports:
         if ni.module:
@@ -88,15 +95,43 @@ def _resolve_name_imports(module: Module) -> list[tuple[str, str]]:
     return fqns
 
 
-def _resolve_module_imports(module: Module) -> list[str]:
-    module_imports = _filter_module_by_type(module, Import)
+def _resolve_module_imports(module: ast.Module) -> list[str]:
+    module_imports = _filter_module_by_type(module, ast.Import)
     return [name.name for mi in module_imports for name in mi.names]
+
+
+def resolve_import_statements(module: ast.Module) -> list[Import]:
+    imports: list[Import] = []
+    for item in module.body:
+        if isinstance(item, ast.Import):
+            imports.extend(
+                [
+                    Import(
+                        module=name.name,
+                        alias=name.asname,
+                        name=None,
+                    )
+                    for name in item.names
+                ]
+            )
+        elif isinstance(item, ast.ImportFrom):
+            imports.extend(
+                [
+                    Import(
+                        module=item.module, name=name.name, alias=name.asname
+                    )
+                    for name in item.names
+                    if item.module
+                ]
+            )
+
+    return imports
 
 
 def find_source_or_external_import(
     searched_symbol: str,
     search_module: str,
-    module_lookup: dict[str, Module],
+    module_lookup: dict[str, ast.Module],
 ) -> str | None:
     split = searched_symbol.rsplit(".", maxsplit=1)
     match split:
@@ -114,25 +149,27 @@ def find_source_or_external_import(
         return ".".join((search_module, searched_symbol))
 
     # check if implementation is in the module itself
-    classes = _filter_module_by_type(module, ClassDef)
+    classes = _filter_module_by_type(module, ast.ClassDef)
     for cd in classes:
         if cd.name == symbol_object_name:
             return ".".join((search_module, cd.name))
 
-    # check if the symbol is imported - name import
-    name_imports = _resolve_name_imports(module)
-    for import_mod, import_name in name_imports:
-        if import_name == symbol_object_name:
+    # check if the symbol is imported
+    imports = resolve_import_statements(module)
+    for imp in imports:
+        if imp.name and imp.name == symbol_object_name:
             return find_source_or_external_import(
-                import_name, import_mod, module_lookup
+                searched_symbol=imp.name,
+                search_module=imp.module,
+                module_lookup=module_lookup,
             )
-
-    # check if the symbol is imported - module import
-    module_imports = _resolve_module_imports(module)
-    for mi in module_imports:
-        if mi == symbol_module_ref:
+        elif not imp.name and (
+            imp.module == symbol_module_ref or imp.alias == symbol_module_ref
+        ):
             return find_source_or_external_import(
-                symbol_object_name, mi, module_lookup
+                searched_symbol=symbol_object_name,
+                search_module=imp.module,
+                module_lookup=module_lookup,
             )
 
     return None
@@ -160,7 +197,7 @@ def run(
     exclude_absolute: set[Path] = (
         {p.resolve() for p in exclude_relative} if exclude_relative else set()
     )
-    module_hierarchy: dict[str, Module] = {}
+    module_hierarchy: dict[str, ast.Module] = {}
     for fqn, module in walk_project(
         root=project_root,
         exclude_paths=exclude_absolute,
@@ -170,7 +207,7 @@ def run(
     inheritance = InheritanceHierarchy()
     for fqn in module_hierarchy:
         module = module_hierarchy[fqn]
-        classes = _filter_module_by_type(module, ClassDef)
+        classes = _filter_module_by_type(module, ast.ClassDef)
         for class_def in classes:
             class_fqn = ".".join((fqn, class_def.name))
             bases = get_bases_from_class(class_def)
@@ -193,7 +230,7 @@ def run(
         module = module_hierarchy[module_part]
         class_def = next(
             cd
-            for cd in _filter_module_by_type(module, ClassDef)
+            for cd in _filter_module_by_type(module, ast.ClassDef)
             if cd.name == class_part
         )
         fields.extend(extract_fields_from_settings(class_def))

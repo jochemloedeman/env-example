@@ -12,29 +12,57 @@ from ast import (
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterator
+from typing import Iterator, Self
 
 ALWAYS_EXCLUDE_DIRS = {".venv", "site-packages"}
-BASE_SETTINGS_FQN = "pydantic_settings.BaseSettings"
 SETTINGS_CONFIG_CLASS = "SettingsConfigDict"
 ENV_PREFIX_ARG = "env_prefix"
 OUTPUT_FILE = ".env.example"
 
 
-@dataclass
+@dataclass(frozen=True)
+class QualifiedName:
+    parts: tuple[str, ...]
+
+    @classmethod
+    def from_str(cls, fqn: str) -> Self:
+        return cls(tuple(fqn.split(".")))
+
+    @property
+    def parent(self) -> Self:
+        return self.__class__(self.parts[:-1])
+
+    @property
+    def leaf(self) -> str:
+        return self.parts[-1]
+
+    def child(self, name: str) -> Self:
+        return self.__class__(self.parts + (name,))
+
+    def __str__(self) -> str:
+        return ".".join(self.parts)
+
+    def __lt__(self, other: Self) -> bool:
+        return self.parts < other.parts
+
+
+BASE_SETTINGS_FQN = QualifiedName(("pydantic_settings", "BaseSettings"))
+
+
+@dataclass(frozen=True)
 class SettingField:
     name: str
     settings_class: str
     prefix: str | None = None
 
 
-@dataclass
+@dataclass(frozen=True)
 class ModuleImport:
     module: str
     alias: str | None = None
 
 
-@dataclass
+@dataclass(frozen=True)
 class NameImport:
     module: str
     name: str
@@ -44,7 +72,7 @@ class NameImport:
 type ImportItem = ModuleImport | NameImport
 
 
-@dataclass
+@dataclass(frozen=True)
 class ParsedModule:
     ast_module: ast.Module
     classes: dict[str, ast.ClassDef]
@@ -52,12 +80,16 @@ class ParsedModule:
 
 class InheritanceHierarchy:
     def __init__(self) -> None:
-        self._children: defaultdict[str, set] = defaultdict(set)
+        self._children: defaultdict[QualifiedName, set[QualifiedName]] = (
+            defaultdict(set)
+        )
 
-    def add_relation(self, parent: str, child: str):
+    def add_relation(self, parent: QualifiedName, child: QualifiedName):
         self._children[parent].add(child)
 
-    def transitive_subclasses(self, class_name: str) -> set[str]:
+    def transitive_subclasses(
+        self, class_name: QualifiedName
+    ) -> set[QualifiedName]:
         reachable = set()
         for child in self._children[class_name]:
             reachable.add(child)
@@ -76,26 +108,25 @@ def main() -> None:
     namespace = parser.parse_args()
 
     cwd = Path.cwd()
-    txt = generate_env_example_txt(
+    generate_env_example(
         project_root=cwd,
         exclude_relative=namespace.exclude_dir,
     )
-    write_to_file(txt, cwd / OUTPUT_FILE)
 
 
 def write_to_file(text: str, file: Path) -> None:
     file.write_text(text)
 
 
-def generate_env_example_txt(
+def generate_env_example(
     project_root: Path,
     exclude_relative: list[Path] | None,
-) -> str:
+) -> None:
     exclude_absolute: set[Path] = (
         {p.resolve() for p in exclude_relative} if exclude_relative else set()
     )
 
-    module_hierarchy: dict[str, ParsedModule] = {}
+    module_hierarchy: dict[QualifiedName, ParsedModule] = {}
     for fqn, ast_module in walk_project(
         root=project_root,
         exclude_paths=exclude_absolute,
@@ -109,7 +140,7 @@ def generate_env_example_txt(
     inheritance = InheritanceHierarchy()
     for fqn, parsed_module in module_hierarchy.items():
         for class_def in parsed_module.classes.values():
-            class_fqn = f"{fqn}.{class_def.name}"
+            class_fqn = fqn.child(class_def.name)
             for base in get_bases_from_class(class_def):
                 parent = find_source_or_external_import(
                     searched_symbol=base,
@@ -117,29 +148,31 @@ def generate_env_example_txt(
                     module_lookup=module_hierarchy,
                 )
                 if parent:
-                    inheritance.add_relation(parent=parent, child=class_fqn)
+                    inheritance.add_relation(
+                        parent=parent,
+                        child=class_fqn,
+                    )
 
     settings_subclasses = inheritance.transitive_subclasses(BASE_SETTINGS_FQN)
 
     fields_per_class: dict[str, list[SettingField]] = {}
     for fqn in sorted(settings_subclasses):
-        module_fqn, class_name = fqn.rsplit(".", maxsplit=1)
-        class_def = module_hierarchy[module_fqn].classes[class_name]
+        class_def = module_hierarchy[fqn.parent].classes[fqn.leaf]
         fields_per_class[class_def.name] = extract_fields_from_settings(
             class_def
         )
 
     env_example_txt = build_env_example(fields_per_class)
-    return env_example_txt
+    write_to_file(env_example_txt, project_root / OUTPUT_FILE)
 
 
 def walk_project(
     root: Path,
     exclude_paths: set[Path],
-) -> Iterator[tuple[str, ast.Module]]:
+) -> Iterator[tuple[QualifiedName, ast.Module]]:
     def walk_dir(
-        dir: Path, parent_package: str
-    ) -> Iterator[tuple[str, ast.Module]]:
+        dir: Path, parent_package: QualifiedName
+    ) -> Iterator[tuple[QualifiedName, ast.Module]]:
         is_package = False
         for p in dir.iterdir():
             if p.name == "__init__.py":
@@ -147,16 +180,16 @@ def walk_project(
                 break
 
         new_parent = (
-            ".".join(filter(None, [parent_package, dir.name]))
-            if is_package
-            else ""
+            parent_package.child(dir.name) if is_package else QualifiedName(())
         )
 
         for item in sorted(dir.iterdir()):
             if is_package and item.is_file() and item.suffix == ".py":
                 module = ast.parse(item.read_text())
-                module_fqn = ".".join(
-                    x for x in [new_parent, item.stem] if x != "__init__"
+                module_fqn = (
+                    new_parent
+                    if item.stem == "__init__"
+                    else new_parent.child(item.stem)
                 )
                 yield (module_fqn, module)
 
@@ -167,43 +200,42 @@ def walk_project(
             ):
                 yield from walk_dir(item, parent_package=parent_package)
 
-    yield from walk_dir(root, parent_package="")
+    yield from walk_dir(root, parent_package=QualifiedName(()))
 
 
 def find_source_or_external_import(
-    searched_symbol: str,
-    search_module: str,
-    module_lookup: dict[str, ParsedModule],
-) -> str | None:
-    split = searched_symbol.rsplit(".", maxsplit=1)
-    match split:
-        case [symbol_object_name]:
+    searched_symbol: QualifiedName,
+    search_module: QualifiedName,
+    module_lookup: dict[QualifiedName, ParsedModule],
+) -> QualifiedName | None:
+    match searched_symbol.parts:
+        case (symbol_object_name,):
             symbol_module_ref = None
-        case [symbol_module_ref, symbol_object_name]:
+        case (*_, symbol_module_ref, symbol_object_name):
             pass
 
     parsed_module = module_lookup.get(search_module)
     if not parsed_module:
-        return f"{search_module}.{searched_symbol}"
+        return search_module.child(str(searched_symbol))
 
     if symbol_object_name in parsed_module.classes:
-        return f"{search_module}.{symbol_object_name}"
+        return search_module.child(symbol_object_name)
 
     imports = resolve_import_statements(parsed_module.ast_module)
     for imp in imports:
         match imp:
             case NameImport(module, name, _) if name == symbol_object_name:
                 return find_source_or_external_import(
-                    searched_symbol=name,
-                    search_module=module,
+                    searched_symbol=QualifiedName((name,)),
+                    search_module=QualifiedName.from_str(module),
                     module_lookup=module_lookup,
                 )
             case ModuleImport(module, alias) if (
                 module == symbol_module_ref or alias == symbol_module_ref
             ):
                 return find_source_or_external_import(
-                    searched_symbol=symbol_object_name,
-                    search_module=module,
+                    searched_symbol=QualifiedName((symbol_object_name,)),
+                    search_module=QualifiedName.from_str(module),
                     module_lookup=module_lookup,
                 )
 
@@ -269,13 +301,13 @@ def extract_fields_from_settings(cd: ClassDef) -> list[SettingField]:
     return fields
 
 
-def get_bases_from_class(cd: ClassDef) -> list[str]:
-    bases: list[str] = []
+def get_bases_from_class(cd: ClassDef) -> list[QualifiedName]:
+    bases: list[QualifiedName] = []
     for base in cd.bases:
         if isinstance(base, Name):
-            bases.append(base.id)
+            bases.append(QualifiedName((base.id,)))
         elif isinstance(base, Attribute) and isinstance(base.value, Name):
-            bases.append(f"{base.value.id}.{base.attr}")
+            bases.append(QualifiedName((base.value.id, base.attr)))
     return bases
 
 

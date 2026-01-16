@@ -1,19 +1,37 @@
 import argparse
 import ast
+from ast import (
+    AnnAssign,
+    Assign,
+    Attribute,
+    Call,
+    ClassDef,
+    Constant,
+    Name,
+)
 from collections import defaultdict
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator
 
-from env_example.ast_utils import (
-    SettingField,
-    extract_fields_from_settings,
-    filter_module_by_type,
-    get_bases_from_class,
-    resolve_import_statements,
-)
-
 ALWAYS_EXCLUDE_DIRS = {".venv", "site-packages"}
 BASE_SETTINGS_FQN = "pydantic_settings.BaseSettings"
+SETTINGS_CONFIG_CLASS = "SettingsConfigDict"
+ENV_PREFIX_ARG = "env_prefix"
+
+
+@dataclass
+class SettingField:
+    name: str
+    settings_class: str
+    prefix: str | None = None
+
+
+@dataclass
+class ImportItem:
+    module: str
+    name: str | None
+    alias: str | None
 
 
 class InheritanceHierarchy:
@@ -31,16 +49,73 @@ class InheritanceHierarchy:
         return reachable
 
 
-def build_env_example(fields_per_class: dict[str, list[SettingField]]) -> str:
-    example: str = ""
-    for class_name, fields in fields_per_class.items():
-        example += f"# {class_name}" + "\n"
-        for field in fields:
-            example += f"{field.prefix or ''}{field.name}=".upper() + "\n"
-        example += "\n"
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--exclude-dir",
+        default=None,
+        type=Path,
+        action="append",
+    )
+    namespace = parser.parse_args()
 
-    example = example.removesuffix("\n")
-    return example
+    cwd = Path.cwd()
+    run(
+        project_root=cwd,
+        exclude_relative=namespace.exclude_dir,
+    )
+
+
+def run(
+    project_root: Path,
+    exclude_relative: list[Path] | None,
+) -> None:
+    exclude_absolute: set[Path] = (
+        {p.resolve() for p in exclude_relative} if exclude_relative else set()
+    )
+
+    module_hierarchy: dict[str, ast.Module] = {}
+    for fqn, module in walk_project(
+        root=project_root,
+        exclude_paths=exclude_absolute,
+    ):
+        module_hierarchy[fqn] = module
+
+    inheritance = InheritanceHierarchy()
+    for fqn, module in module_hierarchy.items():
+        classes = filter_module_by_type(module, ast.ClassDef)
+        for class_def in classes:
+            class_fqn = ".".join((fqn, class_def.name))
+            bases = get_bases_from_class(class_def)
+            for base in bases:
+                parent = find_source_or_external_import(
+                    searched_symbol=base,
+                    search_module=fqn,
+                    module_lookup=module_hierarchy,
+                )
+                if parent:
+                    inheritance.add_relation(
+                        parent=parent,
+                        child=class_fqn,
+                    )
+
+    settings_subclasses = inheritance.transitive_subclasses(BASE_SETTINGS_FQN)
+    fields_per_class: dict[str, list[SettingField]] = {}
+    for fqn in sorted(settings_subclasses):
+        module_part, class_part = fqn.rsplit(".", maxsplit=1)
+        module = module_hierarchy[module_part]
+        class_def = next(
+            cd
+            for cd in filter_module_by_type(module, ast.ClassDef)
+            if cd.name == class_part
+        )
+        fields_per_class[class_def.name] = extract_fields_from_settings(
+            class_def
+        )
+
+    env_example_txt = build_env_example(fields_per_class)
+    target_file = project_root / ".env.example"
+    target_file.write_text(env_example_txt)
 
 
 def walk_project(
@@ -97,7 +172,7 @@ def find_source_or_external_import(
     if not module:
         return ".".join((search_module, searched_symbol))
 
-    # implementation in this mdule
+    # implementation in this module
     classes = filter_module_by_type(module, ast.ClassDef)
     for cd in classes:
         if cd.name == symbol_object_name:
@@ -126,74 +201,108 @@ def find_source_or_external_import(
     return None
 
 
-def run(
-    project_root: Path,
-    exclude_relative: list[Path] | None,
-) -> None:
-    exclude_absolute: set[Path] = (
-        {p.resolve() for p in exclude_relative} if exclude_relative else set()
-    )
+def build_env_example(fields_per_class: dict[str, list[SettingField]]) -> str:
+    example: str = ""
+    for class_name, fields in fields_per_class.items():
+        example += f"# {class_name}" + "\n"
+        for field in fields:
+            example += f"{field.prefix or ''}{field.name}=".upper() + "\n"
+        example += "\n"
 
-    module_hierarchy: dict[str, ast.Module] = {}
-    for fqn, module in walk_project(
-        root=project_root,
-        exclude_paths=exclude_absolute,
-    ):
-        module_hierarchy[fqn] = module
+    example = example.removesuffix("\n")
+    return example
 
-    inheritance = InheritanceHierarchy()
-    for fqn in module_hierarchy:
-        module = module_hierarchy[fqn]
-        classes = filter_module_by_type(module, ast.ClassDef)
-        for class_def in classes:
-            class_fqn = ".".join((fqn, class_def.name))
-            bases = get_bases_from_class(class_def)
-            for base in bases:
-                parent = find_source_or_external_import(
-                    searched_symbol=base,
-                    search_module=fqn,
-                    module_lookup=module_hierarchy,
-                )
-                if parent:
-                    inheritance.add_relation(
-                        parent=parent,
-                        child=class_fqn,
+
+def extract_fields_from_settings(cd: ClassDef) -> list[SettingField]:
+    prefixes: list[str] = []
+
+    for item in cd.body:
+        if not isinstance(item, (Assign, AnnAssign)):
+            continue
+
+        value = item.value
+        if not isinstance(value, Call):
+            continue
+
+        if not (
+            isinstance(value.func, Name)
+            and value.func.id == SETTINGS_CONFIG_CLASS
+        ):
+            continue
+
+        for kw in value.keywords:
+            if (
+                kw.arg == ENV_PREFIX_ARG
+                and isinstance(kw.value, Constant)
+                and isinstance(kw.value.value, str)
+            ):
+                prefixes.append(kw.value.value)
+
+    if len(prefixes) > 1:
+        raise ValueError("Multiple prefixes found, invalid.")
+
+    prefix = prefixes[0] if prefixes else None
+    fields: list[SettingField] = []
+
+    for elem in cd.body:
+        if not isinstance(elem, AnnAssign):
+            continue
+        if not isinstance(elem.target, Name):
+            continue
+        name: str = elem.target.id
+        fields.append(
+            SettingField(
+                name=name,
+                settings_class=cd.name,
+                prefix=prefix,
+            )
+        )
+
+    return fields
+
+
+def get_bases_from_class(cd: ClassDef) -> list[str]:
+    bases: list[str] = []
+    for base in cd.bases:
+        if isinstance(base, Name):
+            bases.append(base.id)
+        elif isinstance(base, Attribute) and isinstance(base.value, Name):
+            bases.append(f"{base.value.id}.{base.attr}")
+    return bases
+
+
+def filter_module_by_type[T](module: ast.Module, type_: type[T]) -> list[T]:
+    return [item for item in module.body if isinstance(item, type_)]
+
+
+def resolve_import_statements(module: ast.Module) -> list[ImportItem]:
+    imports: list[ImportItem] = []
+    for item in module.body:
+        if isinstance(item, ast.Import):
+            imports.extend(
+                [
+                    ImportItem(
+                        module=name.name,
+                        alias=name.asname,
+                        name=None,
                     )
+                    for name in item.names
+                ]
+            )
+        elif isinstance(item, ast.ImportFrom):
+            imports.extend(
+                [
+                    ImportItem(
+                        module=item.module,
+                        name=name.name,
+                        alias=name.asname,
+                    )
+                    for name in item.names
+                    if item.module
+                ]
+            )
 
-    settings_subclasses = inheritance.transitive_subclasses(BASE_SETTINGS_FQN)
-    fields_per_class: dict[str, list[SettingField]] = {}
-    for fqn in sorted(settings_subclasses):
-        module_part, class_part = fqn.rsplit(".", maxsplit=1)
-        module = module_hierarchy[module_part]
-        class_def = next(
-            cd
-            for cd in filter_module_by_type(module, ast.ClassDef)
-            if cd.name == class_part
-        )
-        fields_per_class[class_def.name] = extract_fields_from_settings(
-            class_def
-        )
-
-    env_example_txt = build_env_example(fields_per_class)
-    target_file = project_root / ".env.example"
-    target_file.write_text(env_example_txt)
-
-
-def main() -> None:
-    parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--exclude-dir",
-        default=None,
-        type=Path,
-        action="append",
-    )
-    namespace = parser.parse_args()
-
-    cwd = Path.cwd()
-    run(
-        project_root=cwd,
-        exclude_relative=namespace.exclude_dir,
-    )
+    return imports
 
 
 if __name__ == "__main__":

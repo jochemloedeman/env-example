@@ -159,7 +159,8 @@ def generate_env_example(
         )
 
     env_example_txt = build_env_example(fields_per_class)
-    write_to_file(env_example_txt, project_root / OUTPUT_FILE)
+    if env_example_txt:
+        write_to_file(env_example_txt, project_root / OUTPUT_FILE)
 
 
 def write_to_file(text: str, file: Path) -> None:
@@ -208,6 +209,12 @@ def find_source_or_external_import(
     search_module: QualifiedName,
     module_lookup: dict[QualifiedName, ParsedModule],
 ) -> QualifiedName | None:
+    """
+    Returns either
+        - the fqn when the import is external
+        - the fqn to the implementation of the searched symbol
+        - None if none of the above, and no imports can be followed
+    """
     match searched_symbol.parts:
         case (symbol_object_name,):
             symbol_module_ref = None
@@ -215,12 +222,16 @@ def find_source_or_external_import(
             pass
 
     parsed_module = module_lookup.get(search_module)
+
+    # module is external
     if not parsed_module:
         return search_module.child(str(searched_symbol))
 
+    # implementation is in module
     if symbol_object_name in parsed_module.classes:
         return search_module.child(symbol_object_name)
 
+    # follow imports
     imports = resolve_import_statements(parsed_module.ast_module)
     for imp in imports:
         match imp:
@@ -243,6 +254,8 @@ def find_source_or_external_import(
 
 
 def build_env_example(fields_per_class: dict[str, list[SettingField]]) -> str:
+    if not fields_per_class:
+        return ""
     sections = [
         f"# {class_name}\n"
         + "\n".join(
@@ -279,7 +292,9 @@ def extract_fields_from_settings(cd: ClassDef) -> list[SettingField]:
                 prefixes.append(kw.value.value)
 
     if len(prefixes) > 1:
-        raise ValueError("Multiple prefixes found, invalid.")
+        raise ValueError(
+            f"Multiple prefixes found for class {cd.name}: {(prefixes,)}"
+        )
 
     prefix = prefixes[0] if prefixes else None
     fields: list[SettingField] = []

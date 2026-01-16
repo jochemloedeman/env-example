@@ -118,6 +118,14 @@ def generate_env_example(
     project_root: Path,
     exclude_relative: list[Path] | None,
 ) -> None:
+    """
+    Orchestrator function
+    1. Parse the modules and map the package structure of the project
+    2. Build the inheritance hierarchy
+    3. Calculate all transitive subclasses of BaseSettings
+    4. Extract fields for all settings classes
+    5. Write them to an .env.example file
+    """
     exclude_absolute: set[Path] = (
         {p.resolve() for p in exclude_relative} if exclude_relative else set()
     )
@@ -171,6 +179,12 @@ def walk_project(
     root: Path,
     exclude_paths: set[Path],
 ) -> Iterator[tuple[QualifiedName, ast.Module]]:
+    """
+    Walks down the directory structure of the project, and
+    returns parsed modules and their names with the respect to
+    the package namespace.
+    """
+
     def walk_dir(
         dir: Path, parent_package: QualifiedName
     ) -> Iterator[tuple[QualifiedName, ast.Module]]:

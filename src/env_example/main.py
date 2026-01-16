@@ -114,10 +114,6 @@ def main() -> None:
     )
 
 
-def write_to_file(text: str, file: Path) -> None:
-    file.write_text(text)
-
-
 def generate_env_example(
     project_root: Path,
     exclude_relative: list[Path] | None,
@@ -164,6 +160,10 @@ def generate_env_example(
 
     env_example_txt = build_env_example(fields_per_class)
     write_to_file(env_example_txt, project_root / OUTPUT_FILE)
+
+
+def write_to_file(text: str, file: Path) -> None:
+    file.write_text(text)
 
 
 def walk_project(

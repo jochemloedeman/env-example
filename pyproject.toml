@@ -20,6 +20,9 @@ requires = ["uv_build>=0.9.21,<0.10.0"]
 build-backend = "uv_build"
 
 [dependency-groups]
+dev = [
+    "ty>=0.0.12",
+]
 test = [
     "pydantic-settings>=2.12.0",
     "pytest>=9.0.2",

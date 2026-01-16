@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from env_example.main import run
+from env_example.main import generate_env_example_txt
 
 Case = namedtuple("Case", ["name", "exclude_dirs"])
 
@@ -43,7 +43,9 @@ def run_case(test_case):
         if test_case.exclude_dirs
         else None
     )
-    run(project_root=dir_arg, exclude_relative=exclude_paths)
+    generate_env_example_txt(
+        project_root=dir_arg, exclude_relative=exclude_paths
+    )
     yield
     example_file = dir_arg / ".env.example"
     example_file.unlink()

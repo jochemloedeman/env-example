@@ -18,6 +18,7 @@ ALWAYS_EXCLUDE_DIRS = {".venv", "site-packages"}
 BASE_SETTINGS_FQN = "pydantic_settings.BaseSettings"
 SETTINGS_CONFIG_CLASS = "SettingsConfigDict"
 ENV_PREFIX_ARG = "env_prefix"
+OUTPUT_FILE = ".env.example"
 
 
 @dataclass
@@ -28,10 +29,25 @@ class SettingField:
 
 
 @dataclass
-class ImportItem:
+class ModuleImport:
     module: str
-    name: str | None
-    alias: str | None
+    alias: str | None = None
+
+
+@dataclass
+class NameImport:
+    module: str
+    name: str
+    alias: str | None = None
+
+
+type ImportItem = ModuleImport | NameImport
+
+
+@dataclass
+class ParsedModule:
+    ast_module: ast.Module
+    classes: dict[str, ast.ClassDef]
 
 
 class InheritanceHierarchy:
@@ -60,62 +76,61 @@ def main() -> None:
     namespace = parser.parse_args()
 
     cwd = Path.cwd()
-    run(
+    txt = generate_env_example_txt(
         project_root=cwd,
         exclude_relative=namespace.exclude_dir,
     )
+    write_to_file(txt, cwd / OUTPUT_FILE)
 
 
-def run(
+def write_to_file(text: str, file: Path) -> None:
+    file.write_text(text)
+
+
+def generate_env_example_txt(
     project_root: Path,
     exclude_relative: list[Path] | None,
-) -> None:
+) -> str:
     exclude_absolute: set[Path] = (
         {p.resolve() for p in exclude_relative} if exclude_relative else set()
     )
 
-    module_hierarchy: dict[str, ast.Module] = {}
-    for fqn, module in walk_project(
+    module_hierarchy: dict[str, ParsedModule] = {}
+    for fqn, ast_module in walk_project(
         root=project_root,
         exclude_paths=exclude_absolute,
     ):
-        module_hierarchy[fqn] = module
+        classes = filter_module_by_type(ast_module, ast.ClassDef)
+        module_hierarchy[fqn] = ParsedModule(
+            ast_module=ast_module,
+            classes={cd.name: cd for cd in classes},
+        )
 
     inheritance = InheritanceHierarchy()
-    for fqn, module in module_hierarchy.items():
-        classes = filter_module_by_type(module, ast.ClassDef)
-        for class_def in classes:
-            class_fqn = ".".join((fqn, class_def.name))
-            bases = get_bases_from_class(class_def)
-            for base in bases:
+    for fqn, parsed_module in module_hierarchy.items():
+        for class_def in parsed_module.classes.values():
+            class_fqn = f"{fqn}.{class_def.name}"
+            for base in get_bases_from_class(class_def):
                 parent = find_source_or_external_import(
                     searched_symbol=base,
                     search_module=fqn,
                     module_lookup=module_hierarchy,
                 )
                 if parent:
-                    inheritance.add_relation(
-                        parent=parent,
-                        child=class_fqn,
-                    )
+                    inheritance.add_relation(parent=parent, child=class_fqn)
 
     settings_subclasses = inheritance.transitive_subclasses(BASE_SETTINGS_FQN)
+
     fields_per_class: dict[str, list[SettingField]] = {}
     for fqn in sorted(settings_subclasses):
-        module_part, class_part = fqn.rsplit(".", maxsplit=1)
-        module = module_hierarchy[module_part]
-        class_def = next(
-            cd
-            for cd in filter_module_by_type(module, ast.ClassDef)
-            if cd.name == class_part
-        )
+        module_fqn, class_name = fqn.rsplit(".", maxsplit=1)
+        class_def = module_hierarchy[module_fqn].classes[class_name]
         fields_per_class[class_def.name] = extract_fields_from_settings(
             class_def
         )
 
     env_example_txt = build_env_example(fields_per_class)
-    target_file = project_root / ".env.example"
-    target_file.write_text(env_example_txt)
+    return env_example_txt
 
 
 def walk_project(
@@ -140,10 +155,9 @@ def walk_project(
         for item in sorted(dir.iterdir()):
             if is_package and item.is_file() and item.suffix == ".py":
                 module = ast.parse(item.read_text())
-                module_name = (
-                    stem if (stem := item.stem) != "__init__" else None
+                module_fqn = ".".join(
+                    x for x in [new_parent, item.stem] if x != "__init__"
                 )
-                module_fqn = ".".join(filter(None, [new_parent, module_name]))
                 yield (module_fqn, module)
 
             if (
@@ -159,7 +173,7 @@ def walk_project(
 def find_source_or_external_import(
     searched_symbol: str,
     search_module: str,
-    module_lookup: dict[str, ast.Module],
+    module_lookup: dict[str, ParsedModule],
 ) -> str | None:
     split = searched_symbol.rsplit(".", maxsplit=1)
     match split:
@@ -168,49 +182,43 @@ def find_source_or_external_import(
         case [symbol_module_ref, symbol_object_name]:
             pass
 
-    module = module_lookup.get(search_module)
-    if not module:
-        return ".".join((search_module, searched_symbol))
+    parsed_module = module_lookup.get(search_module)
+    if not parsed_module:
+        return f"{search_module}.{searched_symbol}"
 
-    # implementation in this module
-    classes = filter_module_by_type(module, ast.ClassDef)
-    for cd in classes:
-        if cd.name == symbol_object_name:
-            return ".".join((search_module, cd.name))
+    if symbol_object_name in parsed_module.classes:
+        return f"{search_module}.{symbol_object_name}"
 
-    # symbol is imported
-    imports = resolve_import_statements(module)
+    imports = resolve_import_statements(parsed_module.ast_module)
     for imp in imports:
-        if imp.name and imp.name == symbol_object_name:
-            # name import
-            return find_source_or_external_import(
-                searched_symbol=imp.name,
-                search_module=imp.module,
-                module_lookup=module_lookup,
-            )
-        elif not imp.name and (
-            imp.module == symbol_module_ref or imp.alias == symbol_module_ref
-        ):
-            # module import
-            return find_source_or_external_import(
-                searched_symbol=symbol_object_name,
-                search_module=imp.module,
-                module_lookup=module_lookup,
-            )
+        match imp:
+            case NameImport(module, name, _) if name == symbol_object_name:
+                return find_source_or_external_import(
+                    searched_symbol=name,
+                    search_module=module,
+                    module_lookup=module_lookup,
+                )
+            case ModuleImport(module, alias) if (
+                module == symbol_module_ref or alias == symbol_module_ref
+            ):
+                return find_source_or_external_import(
+                    searched_symbol=symbol_object_name,
+                    search_module=module,
+                    module_lookup=module_lookup,
+                )
 
     return None
 
 
 def build_env_example(fields_per_class: dict[str, list[SettingField]]) -> str:
-    example: str = ""
-    for class_name, fields in fields_per_class.items():
-        example += f"# {class_name}" + "\n"
-        for field in fields:
-            example += f"{field.prefix or ''}{field.name}=".upper() + "\n"
-        example += "\n"
-
-    example = example.removesuffix("\n")
-    return example
+    sections = [
+        f"# {class_name}\n"
+        + "\n".join(
+            f"{field.prefix or ''}{field.name}=".upper() for field in fields
+        )
+        for class_name, fields in fields_per_class.items()
+    ]
+    return "\n\n".join(sections) + "\n"
 
 
 def extract_fields_from_settings(cd: ClassDef) -> list[SettingField]:
@@ -280,26 +288,15 @@ def resolve_import_statements(module: ast.Module) -> list[ImportItem]:
     for item in module.body:
         if isinstance(item, ast.Import):
             imports.extend(
-                [
-                    ImportItem(
-                        module=name.name,
-                        alias=name.asname,
-                        name=None,
-                    )
-                    for name in item.names
-                ]
+                ModuleImport(module=name.name, alias=name.asname)
+                for name in item.names
             )
-        elif isinstance(item, ast.ImportFrom):
+        elif isinstance(item, ast.ImportFrom) and item.module:
             imports.extend(
-                [
-                    ImportItem(
-                        module=item.module,
-                        name=name.name,
-                        alias=name.asname,
-                    )
-                    for name in item.names
-                    if item.module
-                ]
+                NameImport(
+                    module=item.module, name=name.name, alias=name.asname
+                )
+                for name in item.names
             )
 
     return imports

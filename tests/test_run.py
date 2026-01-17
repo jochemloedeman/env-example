@@ -26,6 +26,7 @@ test_cases: list[Case] = [
     Case(name="transitive_inheritance", exclude_dirs=None),
     Case(name="two_level_transitive_inheritance", exclude_dirs=None),
     Case(name="reexport_inheritance", exclude_dirs=None),
+    Case(name="qualified_module_import", exclude_dirs=None),
 ]
 
 

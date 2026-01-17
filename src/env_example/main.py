@@ -213,7 +213,7 @@ def walk_project(
                 and item.name not in ALWAYS_EXCLUDE_DIRS
                 and item not in exclude_paths
             ):
-                yield from walk_dir(item, parent_package=parent_package)
+                yield from walk_dir(item, parent_package=new_parent)
 
     yield from walk_dir(root, parent_package=QualifiedName(()))
 
@@ -229,11 +229,8 @@ def find_source_or_external_import(
         - the fqn to the implementation of the searched symbol
         - None if none of the above, and no imports can be followed
     """
-    match searched_symbol.parts:
-        case (symbol_object_name,):
-            symbol_module_ref = None
-        case (*_, symbol_module_ref, symbol_object_name):
-            pass
+    *module_parts, symbol_object_name = searched_symbol.parts
+    symbol_module_ref = ".".join(module_parts) or None
 
     parsed_module = module_lookup.get(search_module)
 
@@ -335,8 +332,15 @@ def get_bases_from_class(cd: ClassDef) -> list[QualifiedName]:
     for base in cd.bases:
         if isinstance(base, Name):
             bases.append(QualifiedName((base.id,)))
-        elif isinstance(base, Attribute) and isinstance(base.value, Name):
-            bases.append(QualifiedName((base.value.id, base.attr)))
+        elif isinstance(base, Attribute):
+            parts: list[str] = [base.attr]
+            node = base.value
+            while isinstance(node, Attribute):
+                parts.append(node.attr)
+                node = node.value
+            if isinstance(node, Name):
+                parts.append(node.id)
+                bases.append(QualifiedName(tuple(reversed(parts))))
     return bases
 
 

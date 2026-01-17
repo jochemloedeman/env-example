@@ -1,0 +1,2 @@
+class RegularClass:
+    pass

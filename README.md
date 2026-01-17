@@ -13,7 +13,7 @@
 </p>
 
 
-Creates an `.env.example` file for your monorepo, based on all [Pydantic settings](https://docs.pydantic.dev/latest/concepts/pydantic_settings/) classes found in your project. Env-example uses the abstract syntax tree of your project instead of runtime introspection, to avoid side effects and be less prone to import errors.
+Creates an `.env.example` file for your Python monorepo, based on all [Pydantic settings](https://docs.pydantic.dev/latest/concepts/pydantic_settings/) classes found in your project. Env-example uses the abstract syntax tree of your project to discover settings instead of runtime introspection, to avoid side effects and having to deal with external project dependencies.
 
 # Usage
 I recommend to use `uvx` to run `env-example`:

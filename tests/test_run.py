@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from env_example.main import run
+from env_example.main import generate_env_example
 
 Case = namedtuple("Case", ["name", "exclude_dirs"])
 
@@ -43,7 +43,7 @@ def run_case(test_case):
         if test_case.exclude_dirs
         else None
     )
-    run(project_root=dir_arg, exclude_relative=exclude_paths)
+    generate_env_example(project_root=dir_arg, exclude_relative=exclude_paths)
     yield
     example_file = dir_arg / ".env.example"
     example_file.unlink()
@@ -80,9 +80,30 @@ def outcome_env(test_case, run_case):
     indirect=True,
     ids=[case.name for case in test_cases],
 )
-def test_run(
+def test_generate_env_example(
     run_case,
     expected_env,
     outcome_env,
 ) -> None:
     assert outcome_env == expected_env
+
+
+def test_no_settings_no_file_created() -> None:
+    project_dir = Path(__file__).parent / "cases" / "no_settings" / "project"
+    example_file = project_dir / ".env.example"
+
+    generate_env_example(project_root=project_dir, exclude_relative=None)
+
+    try:
+        assert not example_file.exists()
+    finally:
+        example_file.unlink(missing_ok=True)
+
+
+def test_multiple_prefixes_raises_error() -> None:
+    project_dir = (
+        Path(__file__).parent / "cases" / "multiple_prefixes" / "project"
+    )
+
+    with pytest.raises(ValueError, match="Multiple prefixes found"):
+        generate_env_example(project_root=project_dir, exclude_relative=None)

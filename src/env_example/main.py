@@ -50,13 +50,6 @@ BASE_SETTINGS_FQN = QualifiedName(("pydantic_settings", "BaseSettings"))
 
 
 @dataclass(frozen=True)
-class SettingField:
-    name: str
-    settings_class: str
-    prefix: str | None = None
-
-
-@dataclass(frozen=True)
 class ModuleImport:
     module: str
     alias: str | None = None
@@ -64,9 +57,32 @@ class ModuleImport:
 
 @dataclass(frozen=True)
 class NameImport:
-    module: str
+    module: str | None
     name: str
+    level: int
     alias: str | None = None
+
+    def __post_init__(self):
+        if not self.module and not self.level:
+            raise ValueError("Absolute imports must have a module component")
+
+    def get_qualified_parent_module(
+        self,
+        current: QualifiedName,
+    ) -> QualifiedName:
+        """Resolve the qualified parent module for a relative import"""
+        if not self.level:
+            assert self.module
+            return QualifiedName.from_str(self.module)
+
+        parent_qn = current
+        for _ in range(self.level):
+            parent_qn = parent_qn.parent
+
+        if not self.module:
+            return parent_qn
+
+        return parent_qn.child(self.module)
 
 
 type ImportItem = ModuleImport | NameImport
@@ -80,21 +96,15 @@ class ParsedModule:
 
 class InheritanceHierarchy:
     def __init__(self) -> None:
-        self._children: defaultdict[QualifiedName, set[QualifiedName]] = (
-            defaultdict(set)
+        self._children: defaultdict[QualifiedName, list[QualifiedName]] = (
+            defaultdict(list)
         )
 
     def add_relation(self, parent: QualifiedName, child: QualifiedName):
-        self._children[parent].add(child)
+        self._children[parent].append(child)
 
-    def transitive_subclasses(
-        self, class_name: QualifiedName
-    ) -> set[QualifiedName]:
-        reachable = set()
-        for child in self._children[class_name]:
-            reachable.add(child)
-            reachable.update(self.transitive_subclasses(child))
-        return reachable
+    def get_children(self, class_name: QualifiedName) -> list[QualifiedName]:
+        return self._children[class_name]
 
 
 def main() -> None:
@@ -157,18 +167,37 @@ def generate_env_example(
                         child=class_fqn,
                     )
 
-    settings_subclasses = inheritance.transitive_subclasses(BASE_SETTINGS_FQN)
+    # fields_per_class: dict[str, list[str]] = {}
+    # children = inheritance.get_children(BASE_SETTINGS_FQN)
+    # while children:
+    #     for child in children:
 
-    fields_per_class: dict[str, list[SettingField]] = {}
-    for fqn in sorted(settings_subclasses):
-        class_def = module_hierarchy[fqn.parent].classes[fqn.leaf]
-        fields_per_class[class_def.name] = extract_fields_from_settings(
-            class_def
-        )
+    # for fqn in sorted(settings_subclasses):
+    #     class_def = module_hierarchy[fqn.parent].classes[fqn.leaf]
+    #     fields_per_class[class_def.name] = extract_fields_from_settings(
+    #         class_def
+    #     )
 
-    env_example_txt = build_env_example(fields_per_class)
-    if env_example_txt:
-        write_to_file(env_example_txt, project_root / OUTPUT_FILE)
+    # env_example_txt = build_env_example(fields_per_class)
+    # if env_example_txt:
+    #     write_to_file(env_example_txt, project_root / OUTPUT_FILE)
+
+
+def extract_setting_fields(
+    node: QualifiedName,
+    inheritance: InheritanceHierarchy,
+    modules: dict[QualifiedName, ParsedModule],
+):
+    pass
+
+
+def extract_all_setting_fields(
+    inheritance: InheritanceHierarchy,
+    modules: dict[QualifiedName, ParsedModule],
+):
+    children = inheritance.get_children(BASE_SETTINGS_FQN)
+    for child in children:
+        extract_setting_fields(child, inheritance, modules)
 
 
 def write_to_file(text: str, file: Path) -> None:
@@ -246,10 +275,13 @@ def find_source_or_external_import(
     imports = resolve_import_statements(parsed_module.ast_module)
     for imp in imports:
         match imp:
-            case NameImport(module, name, _) if name == symbol_object_name:
+            case NameImport(module, name) if name == symbol_object_name:
+                resolved = imp.get_qualified_parent_module(
+                    current=search_module
+                )
                 return find_source_or_external_import(
                     searched_symbol=QualifiedName((name,)),
-                    search_module=QualifiedName.from_str(module),
+                    search_module=resolved,
                     module_lookup=module_lookup,
                 )
             case ModuleImport(module, alias) if (
@@ -264,20 +296,18 @@ def find_source_or_external_import(
     return None
 
 
-def build_env_example(fields_per_class: dict[str, list[SettingField]]) -> str:
+def build_env_example(fields_per_class: dict[str, list[str]]) -> str:
     if not fields_per_class:
         return ""
     sections = [
         f"# {class_name}\n"
-        + "\n".join(
-            f"{field.prefix or ''}{field.name}=".upper() for field in fields
-        )
+        + "\n".join(f"{field}=".upper() for field in fields)
         for class_name, fields in fields_per_class.items()
     ]
     return "\n\n".join(sections) + "\n"
 
 
-def extract_fields_from_settings(cd: ClassDef) -> list[SettingField]:
+def extract_fields_from_settings(cd: ClassDef) -> list[str]:
     prefixes: list[str] = []
 
     for item in cd.body:
@@ -308,7 +338,7 @@ def extract_fields_from_settings(cd: ClassDef) -> list[SettingField]:
         )
 
     prefix = prefixes[0] if prefixes else None
-    fields: list[SettingField] = []
+    fields: list[str] = []
 
     for elem in cd.body:
         if not isinstance(elem, AnnAssign):
@@ -316,13 +346,7 @@ def extract_fields_from_settings(cd: ClassDef) -> list[SettingField]:
         if not isinstance(elem.target, Name):
             continue
         name: str = elem.target.id
-        fields.append(
-            SettingField(
-                name=name,
-                settings_class=cd.name,
-                prefix=prefix,
-            )
-        )
+        fields.append(f"{prefix}{name}")
 
     return fields
 
@@ -356,10 +380,13 @@ def resolve_import_statements(module: ast.Module) -> list[ImportItem]:
                 ModuleImport(module=name.name, alias=name.asname)
                 for name in item.names
             )
-        elif isinstance(item, ast.ImportFrom) and item.module:
+        elif isinstance(item, ast.ImportFrom):
             imports.extend(
                 NameImport(
-                    module=item.module, name=name.name, alias=name.asname
+                    module=item.module,
+                    name=name.name,
+                    alias=name.asname,
+                    level=item.level,
                 )
                 for name in item.names
             )

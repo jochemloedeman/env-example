@@ -94,34 +94,19 @@ class ParsedModule:
     classes: dict[str, ast.ClassDef]
 
 
-class InheritanceHierarchy:
+class InheritanceTree:
     def __init__(self) -> None:
         self._children: defaultdict[QualifiedName, list[QualifiedName]] = (
             defaultdict(list)
         )
 
-    def add_relation(self, parent: QualifiedName, child: QualifiedName):
-        self._children[parent].append(child)
+    def add_relation(
+        self, parent_class: QualifiedName, child_class: QualifiedName
+    ):
+        self._children[parent_class].append(child_class)
 
-    def get_children(self, class_name: QualifiedName) -> list[QualifiedName]:
-        return self._children[class_name]
-
-
-def main() -> None:
-    parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--exclude-dir",
-        default=None,
-        type=Path,
-        action="append",
-    )
-    namespace = parser.parse_args()
-
-    cwd = Path.cwd()
-    generate_env_example(
-        project_root=cwd,
-        exclude_relative=namespace.exclude_dir,
-    )
+    def get_children(self, class_node: QualifiedName) -> list[QualifiedName]:
+        return self._children[class_node]
 
 
 def generate_env_example(
@@ -151,7 +136,7 @@ def generate_env_example(
             classes={cd.name: cd for cd in classes},
         )
 
-    inheritance = InheritanceHierarchy()
+    inheritance = InheritanceTree()
     for fqn, parsed_module in module_hierarchy.items():
         for class_def in parsed_module.classes.values():
             class_fqn = fqn.child(class_def.name)
@@ -163,41 +148,44 @@ def generate_env_example(
                 )
                 if parent:
                     inheritance.add_relation(
-                        parent=parent,
-                        child=class_fqn,
+                        parent_class=parent,
+                        child_class=class_fqn,
                     )
 
-    # fields_per_class: dict[str, list[str]] = {}
-    # children = inheritance.get_children(BASE_SETTINGS_FQN)
-    # while children:
-    #     for child in children:
-
-    # for fqn in sorted(settings_subclasses):
-    #     class_def = module_hierarchy[fqn.parent].classes[fqn.leaf]
-    #     fields_per_class[class_def.name] = extract_fields_from_settings(
-    #         class_def
-    #     )
-
-    # env_example_txt = build_env_example(fields_per_class)
-    # if env_example_txt:
-    #     write_to_file(env_example_txt, project_root / OUTPUT_FILE)
-
-
-def extract_setting_fields(
-    node: QualifiedName,
-    inheritance: InheritanceHierarchy,
-    modules: dict[QualifiedName, ParsedModule],
-):
-    pass
-
-
-def extract_all_setting_fields(
-    inheritance: InheritanceHierarchy,
-    modules: dict[QualifiedName, ParsedModule],
-):
+    fields_per_settings: dict[str, set[str]] = defaultdict(set)
     children = inheritance.get_children(BASE_SETTINGS_FQN)
     for child in children:
-        extract_setting_fields(child, inheritance, modules)
+        gather_settings_for_subtree(
+            node=child,
+            inheritance_tree=inheritance,
+            module_hierarchy=module_hierarchy,
+            fields_per_settings=fields_per_settings,
+        )
+
+    env_example_txt = build_env_example(fields_per_settings)
+    if env_example_txt:
+        write_to_file(env_example_txt, project_root / OUTPUT_FILE)
+
+
+def gather_settings_for_subtree(
+    node: QualifiedName,
+    inheritance_tree: InheritanceTree,
+    module_hierarchy: dict[QualifiedName, ParsedModule],
+    fields_per_settings: dict[str, set[str]],
+):
+    class_def = module_hierarchy[node.parent].classes[node.leaf]
+    fields = extract_fields_from_settings(class_def)
+    fields_per_settings[class_def.name].add(*fields)
+    for child in inheritance_tree.get_children(node):
+        class_def = module_hierarchy[child.parent].classes[child.leaf]
+        fields = extract_fields_from_settings(class_def)
+        fields_per_settings[class_def.name].add(*fields)
+        gather_settings_for_subtree(
+            node=child,
+            inheritance_tree=inheritance_tree,
+            module_hierarchy=module_hierarchy,
+            fields_per_settings=fields_per_settings,
+        )
 
 
 def write_to_file(text: str, file: Path) -> None:
@@ -296,7 +284,7 @@ def find_source_or_external_import(
     return None
 
 
-def build_env_example(fields_per_class: dict[str, list[str]]) -> str:
+def build_env_example(fields_per_class: dict[str, set[str]]) -> str:
     if not fields_per_class:
         return ""
     sections = [
@@ -346,7 +334,7 @@ def extract_fields_from_settings(cd: ClassDef) -> list[str]:
         if not isinstance(elem.target, Name):
             continue
         name: str = elem.target.id
-        fields.append(f"{prefix}{name}")
+        fields.append(f"{prefix}{name}" if prefix else f"{name}")
 
     return fields
 
@@ -392,6 +380,23 @@ def resolve_import_statements(module: ast.Module) -> list[ImportItem]:
             )
 
     return imports
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--exclude-dir",
+        default=None,
+        type=Path,
+        action="append",
+    )
+    namespace = parser.parse_args()
+
+    cwd = Path.cwd()
+    generate_env_example(
+        project_root=cwd,
+        exclude_relative=namespace.exclude_dir,
+    )
 
 
 if __name__ == "__main__":

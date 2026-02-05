@@ -116,10 +116,9 @@ def generate_env_example(
     """
     Orchestrator function
     1. Parse the modules and map the package structure of the project
-    2. Build the inheritance hierarchy
-    3. Calculate all transitive subclasses of BaseSettings
-    4. Extract fields for all settings classes
-    5. Write them to an .env.example file
+    2. Build the inheritance tree
+    3. Parse settings for the subclasses of BaseSettings
+    4. Write them to an .env.example file
     """
     exclude_absolute: set[Path] = (
         {p.resolve() for p in exclude_relative} if exclude_relative else set()
@@ -302,9 +301,7 @@ def build_env_example(
     sections = [
         f"# {qn.leaf}\n"
         + "\n".join(
-            f"{parsed.prefix}{field}=".upper()
-            if parsed.prefix
-            else f"{field}=".upper()
+            f"{parsed.prefix or ''}{field}=".upper()
             for field in sorted(parsed.fields)
         )
         for qn, parsed in sorted(

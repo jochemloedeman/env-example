@@ -10,7 +10,7 @@ from ast import (
     Name,
 )
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterator, Self
 
@@ -152,46 +152,54 @@ def generate_env_example(
                         child_class=class_fqn,
                     )
 
-    fields_per_settings: dict[str, set[str]] = defaultdict(set)
+    parsed_settings = defaultdict(ParsedSettings)
     children = inheritance.get_children(BASE_SETTINGS_FQN)
     for child in children:
         gather_settings_for_subtree(
             node=child,
             inheritance_tree=inheritance,
             module_hierarchy=module_hierarchy,
-            fields_per_settings=fields_per_settings,
+            parsed_settings=parsed_settings,
         )
 
-    env_example_txt = build_env_example(fields_per_settings)
+    env_example_txt = build_env_example(parsed_settings)
     if env_example_txt:
-        write_to_file(env_example_txt, project_root / OUTPUT_FILE)
+        (project_root / OUTPUT_FILE).write_text(env_example_txt)
+
+
+@dataclass
+class ParsedSettings:
+    prefix: str | None = None
+    fields: set[str] = field(default_factory=set)
 
 
 def gather_settings_for_subtree(
     node: QualifiedName,
     inheritance_tree: InheritanceTree,
     module_hierarchy: dict[QualifiedName, ParsedModule],
-    fields_per_settings: dict[str, set[str]],
-):
-    parent_class_def = module_hierarchy[node.parent].classes[node.leaf]
-    parent_fields = extract_fields_from_settings(parent_class_def)
-    fields_per_settings[parent_class_def.name].add(*parent_fields)
+    parsed_settings: dict[QualifiedName, ParsedSettings],
+) -> None:
+    """
+    Recursively parses fieldsfrom settings classes and adds them to
+    an aggregator for both the currently considered class and its children.
+    """
+    class_def = module_hierarchy[node.parent].classes[node.leaf]
+    fields = parse_fields_from_settings(class_def)
+    prefix = parse_settings_prefix(class_def)
+
+    parsed_settings[node].prefix = prefix
+    parsed_settings[node].fields.update(fields)
+
     for child in inheritance_tree.get_children(node):
-        child_class_def = module_hierarchy[child.parent].classes[child.leaf]
-        all_parent_fields = fields_per_settings[parent_class_def.name]
-        fields_per_settings[child_class_def.name].update(all_parent_fields)
-        child_fields = extract_fields_from_settings(child_class_def)
-        fields_per_settings[child_class_def.name].add(*child_fields)
+        # add parent fields for the child settings class
+        parsed_settings[child].fields.update(parsed_settings[node].fields)
+
         gather_settings_for_subtree(
             node=child,
             inheritance_tree=inheritance_tree,
             module_hierarchy=module_hierarchy,
-            fields_per_settings=fields_per_settings,
+            parsed_settings=parsed_settings,
         )
-
-
-def write_to_file(text: str, file: Path) -> None:
-    file.write_text(text)
 
 
 def walk_project(
@@ -218,7 +226,7 @@ def walk_project(
         )
 
         for item in sorted(dir.iterdir()):
-            if is_package and item.is_file() and item.suffix == ".py":
+            if item.is_file() and item.suffix == ".py":
                 module = ast.parse(item.read_text())
                 module_fqn = (
                     new_parent
@@ -286,18 +294,27 @@ def find_source_or_external_import(
     return None
 
 
-def build_env_example(fields_per_class: dict[str, set[str]]) -> str:
-    if not fields_per_class:
+def build_env_example(
+    parsed_settings: dict[QualifiedName, ParsedSettings],
+) -> str:
+    if not parsed_settings:
         return ""
     sections = [
-        f"# {class_name}\n"
-        + "\n".join(f"{field}=".upper() for field in sorted(fields))
-        for class_name, fields in fields_per_class.items()
+        f"# {qn.leaf}\n"
+        + "\n".join(
+            f"{parsed.prefix}{field}=".upper()
+            if parsed.prefix
+            else f"{field}=".upper()
+            for field in sorted(parsed.fields)
+        )
+        for qn, parsed in sorted(
+            parsed_settings.items(), key=lambda x: x[0].leaf
+        )
     ]
     return "\n\n".join(sections) + "\n"
 
 
-def extract_fields_from_settings(cd: ClassDef) -> list[str]:
+def parse_settings_prefix(cd: ClassDef) -> str | None:
     prefixes: list[str] = []
 
     for item in cd.body:
@@ -328,6 +345,10 @@ def extract_fields_from_settings(cd: ClassDef) -> list[str]:
         )
 
     prefix = prefixes[0] if prefixes else None
+    return prefix
+
+
+def parse_fields_from_settings(cd: ClassDef) -> list[str]:
     fields: list[str] = []
 
     for elem in cd.body:
@@ -336,7 +357,7 @@ def extract_fields_from_settings(cd: ClassDef) -> list[str]:
         if not isinstance(elem.target, Name):
             continue
         name: str = elem.target.id
-        fields.append(f"{prefix}{name}" if prefix else f"{name}")
+        fields.append(name)
 
     return fields
 

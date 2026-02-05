@@ -28,6 +28,7 @@ test_cases: list[Case] = [
     Case(name="reexport_inheritance", exclude_dirs=None),
     Case(name="qualified_module_import", exclude_dirs=None),
     Case(name="relative_import", exclude_dirs=None),
+    Case(name="main_file", exclude_dirs=None),
 ]
 
 

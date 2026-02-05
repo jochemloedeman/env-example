@@ -95,21 +95,6 @@ class ParsedModule:
     classes: dict[str, ast.ClassDef]
 
 
-class InheritanceTree:
-    def __init__(self) -> None:
-        self._children: defaultdict[QualifiedName, list[QualifiedName]] = (
-            defaultdict(list)
-        )
-
-    def add_relation(
-        self, parent_class: QualifiedName, child_class: QualifiedName
-    ):
-        self._children[parent_class].append(child_class)
-
-    def get_children(self, class_node: QualifiedName) -> list[QualifiedName]:
-        return self._children[class_node]
-
-
 @dataclass
 class ParsedSettings:
     prefix: str | None = None
@@ -140,7 +125,7 @@ def generate_env_example(
     """
     Orchestrator function.
     1. Parse the modules and map the package structure of the project
-    2. Build the inheritance tree
+    2. Build a class inheritance lookup
     3. Parse settings for the subclasses of BaseSettings
     4. Write them to an .env.example file
     """
@@ -159,7 +144,9 @@ def generate_env_example(
             classes={cd.name: cd for cd in classes},
         )
 
-    inheritance = InheritanceTree()
+    child_lookup: defaultdict[QualifiedName, list[QualifiedName]] = (
+        defaultdict(list)
+    )
     for fqn, parsed_module in module_lookup.items():
         for class_def in parsed_module.classes.values():
             class_fqn = fqn.child(class_def.name)
@@ -170,17 +157,14 @@ def generate_env_example(
                     module_lookup=module_lookup,
                 )
                 if parent:
-                    inheritance.add_relation(
-                        parent_class=parent,
-                        child_class=class_fqn,
-                    )
+                    child_lookup[parent].append(class_fqn)
 
     parsed_settings = defaultdict(ParsedSettings)
-    children = inheritance.get_children(BASE_SETTINGS_FQN)
+    children = child_lookup[BASE_SETTINGS_FQN]
     for child in children:
         gather_settings_for_subtree(
             node=child,
-            inheritance_tree=inheritance,
+            child_lookup=child_lookup,
             module_lookup=module_lookup,
             parsed_settings=parsed_settings,
         )
@@ -235,9 +219,9 @@ def walk_project(
 
 def gather_settings_for_subtree(
     node: QualifiedName,
-    inheritance_tree: InheritanceTree,
+    child_lookup: defaultdict[QualifiedName, list[QualifiedName]],
     module_lookup: dict[QualifiedName, ParsedModule],
-    parsed_settings: dict[QualifiedName, ParsedSettings],
+    parsed_settings: defaultdict[QualifiedName, ParsedSettings],
 ) -> None:
     """
     Recursively parses fieldsfrom settings classes and adds them to
@@ -250,13 +234,13 @@ def gather_settings_for_subtree(
     parsed_settings[node].prefix = prefix
     parsed_settings[node].fields.update(fields)
 
-    for child in inheritance_tree.get_children(node):
+    for child in child_lookup[node]:
         # add parent fields for the child settings class
         parsed_settings[child].fields.update(parsed_settings[node].fields)
 
         gather_settings_for_subtree(
             node=child,
-            inheritance_tree=inheritance_tree,
+            child_lookup=child_lookup,
             module_lookup=module_lookup,
             parsed_settings=parsed_settings,
         )

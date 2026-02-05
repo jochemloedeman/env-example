@@ -4,10 +4,10 @@
 </h1>
 </div>
 <p align="center">
-<a href="https://pypi.org/project/fastapi" target="_blank">
+<a href="https://pypi.org/project/env-example" target="_blank">
     <img src="https://img.shields.io/pypi/v/env-example?color=%2334D058&label=pypi%20package" alt="Package version">
 </a>
-<a href="https://pypi.org/project/fastapi" target="_blank">
+<a href="https://pypi.org/project/env-example" target="_blank">
     <img src="https://github.com/jochemloedeman/env-example/actions/workflows/test.yml/badge.svg" alt="Package version">
 </a>
 </p>

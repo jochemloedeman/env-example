@@ -109,12 +109,35 @@ class InheritanceTree:
         return self._children[class_node]
 
 
+@dataclass
+class ParsedSettings:
+    prefix: str | None = None
+    fields: set[str] = field(default_factory=set)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--exclude-dir",
+        default=None,
+        type=Path,
+        action="append",
+    )
+    namespace = parser.parse_args()
+
+    cwd = Path.cwd()
+    generate_env_example(
+        project_root=cwd,
+        exclude_relative=namespace.exclude_dir,
+    )
+
+
 def generate_env_example(
     project_root: Path,
     exclude_relative: list[Path] | None,
 ) -> None:
     """
-    Orchestrator function
+    Orchestrator function.
     1. Parse the modules and map the package structure of the project
     2. Build the inheritance tree
     3. Parse settings for the subclasses of BaseSettings
@@ -124,26 +147,26 @@ def generate_env_example(
         {p.resolve() for p in exclude_relative} if exclude_relative else set()
     )
 
-    module_hierarchy: dict[QualifiedName, ParsedModule] = {}
+    module_lookup: dict[QualifiedName, ParsedModule] = {}
     for fqn, ast_module in walk_project(
         root=project_root,
         exclude_paths=exclude_absolute,
     ):
         classes = filter_module_by_type(ast_module, ast.ClassDef)
-        module_hierarchy[fqn] = ParsedModule(
+        module_lookup[fqn] = ParsedModule(
             ast_module=ast_module,
             classes={cd.name: cd for cd in classes},
         )
 
     inheritance = InheritanceTree()
-    for fqn, parsed_module in module_hierarchy.items():
+    for fqn, parsed_module in module_lookup.items():
         for class_def in parsed_module.classes.values():
             class_fqn = fqn.child(class_def.name)
             for base in get_bases_from_class(class_def):
                 parent = find_source_or_external_import(
                     searched_symbol=base,
                     search_module=fqn,
-                    module_lookup=module_hierarchy,
+                    module_lookup=module_lookup,
                 )
                 if parent:
                     inheritance.add_relation(
@@ -157,48 +180,13 @@ def generate_env_example(
         gather_settings_for_subtree(
             node=child,
             inheritance_tree=inheritance,
-            module_hierarchy=module_hierarchy,
+            module_lookup=module_lookup,
             parsed_settings=parsed_settings,
         )
 
     env_example_txt = build_env_example(parsed_settings)
     if env_example_txt:
         (project_root / OUTPUT_FILE).write_text(env_example_txt)
-
-
-@dataclass
-class ParsedSettings:
-    prefix: str | None = None
-    fields: set[str] = field(default_factory=set)
-
-
-def gather_settings_for_subtree(
-    node: QualifiedName,
-    inheritance_tree: InheritanceTree,
-    module_hierarchy: dict[QualifiedName, ParsedModule],
-    parsed_settings: dict[QualifiedName, ParsedSettings],
-) -> None:
-    """
-    Recursively parses fieldsfrom settings classes and adds them to
-    an aggregator for both the currently considered class and its children.
-    """
-    class_def = module_hierarchy[node.parent].classes[node.leaf]
-    fields = parse_fields_from_settings(class_def)
-    prefix = parse_settings_prefix(class_def)
-
-    parsed_settings[node].prefix = prefix
-    parsed_settings[node].fields.update(fields)
-
-    for child in inheritance_tree.get_children(node):
-        # add parent fields for the child settings class
-        parsed_settings[child].fields.update(parsed_settings[node].fields)
-
-        gather_settings_for_subtree(
-            node=child,
-            inheritance_tree=inheritance_tree,
-            module_hierarchy=module_hierarchy,
-            parsed_settings=parsed_settings,
-        )
 
 
 def walk_project(
@@ -242,6 +230,35 @@ def walk_project(
                 yield from walk_dir(item, parent_package=new_parent)
 
     yield from walk_dir(root, parent_package=QualifiedName(()))
+
+
+def gather_settings_for_subtree(
+    node: QualifiedName,
+    inheritance_tree: InheritanceTree,
+    module_lookup: dict[QualifiedName, ParsedModule],
+    parsed_settings: dict[QualifiedName, ParsedSettings],
+) -> None:
+    """
+    Recursively parses fieldsfrom settings classes and adds them to
+    an aggregator for both the currently considered class and its children.
+    """
+    class_def = module_lookup[node.parent].classes[node.leaf]
+    fields = parse_fields_from_settings(class_def)
+    prefix = parse_settings_prefix(class_def)
+
+    parsed_settings[node].prefix = prefix
+    parsed_settings[node].fields.update(fields)
+
+    for child in inheritance_tree.get_children(node):
+        # add parent fields for the child settings class
+        parsed_settings[child].fields.update(parsed_settings[node].fields)
+
+        gather_settings_for_subtree(
+            node=child,
+            inheritance_tree=inheritance_tree,
+            module_lookup=module_lookup,
+            parsed_settings=parsed_settings,
+        )
 
 
 def find_source_or_external_import(
@@ -400,23 +417,6 @@ def resolve_import_statements(module: ast.Module) -> list[ImportItem]:
             )
 
     return imports
-
-
-def main() -> None:
-    parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--exclude-dir",
-        default=None,
-        type=Path,
-        action="append",
-    )
-    namespace = parser.parse_args()
-
-    cwd = Path.cwd()
-    generate_env_example(
-        project_root=cwd,
-        exclude_relative=namespace.exclude_dir,
-    )
 
 
 if __name__ == "__main__":

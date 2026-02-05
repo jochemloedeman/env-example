@@ -7,6 +7,7 @@ from ast import (
     Call,
     ClassDef,
     Constant,
+    Dict,
     Name,
 )
 from collections import defaultdict
@@ -329,33 +330,55 @@ def build_env_example(
 
 
 def parse_settings_prefix(cd: ClassDef) -> str | None:
+    """
+    Parses the model_config configuration to find the configured
+    prefix. model_config can be given as a SettingConfigDict and
+    as a plain dict. we cover both cases.
+    """
     prefixes: list[str] = []
 
     for item in cd.body:
-        if not isinstance(item, (Assign, AnnAssign)):
+        if isinstance(item, AnnAssign):
+            target = item.target
+            value = item.value
+        elif isinstance(item, Assign) and len(item.targets) == 1:
+            target = item.targets[0]
+            value = item.value
+        else:
             continue
 
-        value = item.value
-        if not isinstance(value, Call):
+        if not (isinstance(target, Name) and target.id == "model_config"):
             continue
 
-        if not (
-            isinstance(value.func, Name)
-            and value.func.id == SETTINGS_CONFIG_CLASS
-        ):
-            continue
-
-        for kw in value.keywords:
-            if (
-                kw.arg == ENV_PREFIX_ARG
-                and isinstance(kw.value, Constant)
-                and isinstance(kw.value.value, str)
+        if isinstance(value, Call):
+            # SettingsConfigDict case
+            if not (
+                isinstance(value.func, Name)
+                and value.func.id == SETTINGS_CONFIG_CLASS
             ):
-                prefixes.append(kw.value.value)
+                continue
+            for kw in value.keywords:
+                if (
+                    kw.arg == ENV_PREFIX_ARG
+                    and isinstance(kw.value, Constant)
+                    and isinstance(kw.value.value, str)
+                ):
+                    prefixes.append(kw.value.value)
+
+        elif isinstance(value, Dict):
+            # plain dict case
+            for key, val in zip(value.keys, value.values):
+                if (
+                    isinstance(key, Constant)
+                    and key.value == ENV_PREFIX_ARG
+                    and isinstance(val, Constant)
+                    and isinstance(val.value, str)
+                ):
+                    prefixes.append(val.value)
 
     if len(prefixes) > 1:
         raise ValueError(
-            f"Multiple prefixes found for class {cd.name}: {(prefixes,)}"
+            f"Multiple prefixes found for class {cd.name}: {prefixes}"
         )
 
     prefix = prefixes[0] if prefixes else None

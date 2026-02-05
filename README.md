@@ -24,3 +24,38 @@ uvx env-example
 # Exclude specific directories relative to the project root
 uvx env-example --exclude-dir other/scripts
 ```
+
+# Example
+```python
+from pydantic import BaseSettings
+
+
+class AppSettings(BaseSettings):
+    model_config = {
+        "env_prefix": "APP__"
+    }
+    debug: bool
+    log_level: str
+
+class DatabaseSettings(BaseSettings):
+    model_config = {
+        "env_prefix": "DB__"
+    }
+    host: str
+    port: int
+    username: str
+    password: str
+```
+
+env-example will generate the following `.env.example` file:
+```shell
+# AppSettings
+APP__DEBUG=
+APP__LOG_LEVEL=
+
+# DatabaseSettings
+DB__HOST=
+DB__PORT=
+DB__USERNAME=
+DB__PASSWORD=
+```

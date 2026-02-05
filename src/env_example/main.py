@@ -173,13 +173,15 @@ def gather_settings_for_subtree(
     module_hierarchy: dict[QualifiedName, ParsedModule],
     fields_per_settings: dict[str, set[str]],
 ):
-    class_def = module_hierarchy[node.parent].classes[node.leaf]
-    fields = extract_fields_from_settings(class_def)
-    fields_per_settings[class_def.name].add(*fields)
+    parent_class_def = module_hierarchy[node.parent].classes[node.leaf]
+    parent_fields = extract_fields_from_settings(parent_class_def)
+    fields_per_settings[parent_class_def.name].add(*parent_fields)
     for child in inheritance_tree.get_children(node):
-        class_def = module_hierarchy[child.parent].classes[child.leaf]
-        fields = extract_fields_from_settings(class_def)
-        fields_per_settings[class_def.name].add(*fields)
+        child_class_def = module_hierarchy[child.parent].classes[child.leaf]
+        all_parent_fields = fields_per_settings[parent_class_def.name]
+        fields_per_settings[child_class_def.name].update(all_parent_fields)
+        child_fields = extract_fields_from_settings(child_class_def)
+        fields_per_settings[child_class_def.name].add(*child_fields)
         gather_settings_for_subtree(
             node=child,
             inheritance_tree=inheritance_tree,
@@ -289,7 +291,7 @@ def build_env_example(fields_per_class: dict[str, set[str]]) -> str:
         return ""
     sections = [
         f"# {class_name}\n"
-        + "\n".join(f"{field}=".upper() for field in fields)
+        + "\n".join(f"{field}=".upper() for field in sorted(fields))
         for class_name, fields in fields_per_class.items()
     ]
     return "\n\n".join(sections) + "\n"

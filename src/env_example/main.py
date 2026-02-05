@@ -7,10 +7,11 @@ from ast import (
     Call,
     ClassDef,
     Constant,
+    Dict,
     Name,
 )
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterator, Self
 
@@ -50,13 +51,6 @@ BASE_SETTINGS_FQN = QualifiedName(("pydantic_settings", "BaseSettings"))
 
 
 @dataclass(frozen=True)
-class SettingField:
-    name: str
-    settings_class: str
-    prefix: str | None = None
-
-
-@dataclass(frozen=True)
 class ModuleImport:
     module: str
     alias: str | None = None
@@ -64,9 +58,32 @@ class ModuleImport:
 
 @dataclass(frozen=True)
 class NameImport:
-    module: str
+    module: str | None
     name: str
+    level: int
     alias: str | None = None
+
+    def __post_init__(self):
+        if not self.module and not self.level:
+            raise ValueError("Absolute imports must have a module component")
+
+    def get_qualified_parent_module(
+        self,
+        current: QualifiedName,
+    ) -> QualifiedName:
+        """Resolve the qualified parent module for a relative import"""
+        if not self.level:
+            assert self.module
+            return QualifiedName.from_str(self.module)
+
+        parent_qn = current
+        for _ in range(self.level):
+            parent_qn = parent_qn.parent
+
+        if not self.module:
+            return parent_qn
+
+        return parent_qn.child(self.module)
 
 
 type ImportItem = ModuleImport | NameImport
@@ -78,23 +95,10 @@ class ParsedModule:
     classes: dict[str, ast.ClassDef]
 
 
-class InheritanceHierarchy:
-    def __init__(self) -> None:
-        self._children: defaultdict[QualifiedName, set[QualifiedName]] = (
-            defaultdict(set)
-        )
-
-    def add_relation(self, parent: QualifiedName, child: QualifiedName):
-        self._children[parent].add(child)
-
-    def transitive_subclasses(
-        self, class_name: QualifiedName
-    ) -> set[QualifiedName]:
-        reachable = set()
-        for child in self._children[class_name]:
-            reachable.add(child)
-            reachable.update(self.transitive_subclasses(child))
-        return reachable
+@dataclass
+class ParsedSettings:
+    prefix: str | None = None
+    fields: set[str] = field(default_factory=set)
 
 
 def main() -> None:
@@ -119,60 +123,55 @@ def generate_env_example(
     exclude_relative: list[Path] | None,
 ) -> None:
     """
-    Orchestrator function
+    Orchestrator function.
     1. Parse the modules and map the package structure of the project
-    2. Build the inheritance hierarchy
-    3. Calculate all transitive subclasses of BaseSettings
-    4. Extract fields for all settings classes
-    5. Write them to an .env.example file
+    2. Build a class inheritance lookup
+    3. Parse settings for the subclasses of BaseSettings
+    4. Write them to an .env.example file
     """
     exclude_absolute: set[Path] = (
         {p.resolve() for p in exclude_relative} if exclude_relative else set()
     )
 
-    module_hierarchy: dict[QualifiedName, ParsedModule] = {}
+    module_lookup: dict[QualifiedName, ParsedModule] = {}
     for fqn, ast_module in walk_project(
         root=project_root,
         exclude_paths=exclude_absolute,
     ):
         classes = filter_module_by_type(ast_module, ast.ClassDef)
-        module_hierarchy[fqn] = ParsedModule(
+        module_lookup[fqn] = ParsedModule(
             ast_module=ast_module,
             classes={cd.name: cd for cd in classes},
         )
 
-    inheritance = InheritanceHierarchy()
-    for fqn, parsed_module in module_hierarchy.items():
+    child_lookup: defaultdict[QualifiedName, list[QualifiedName]] = (
+        defaultdict(list)
+    )
+    for fqn, parsed_module in module_lookup.items():
         for class_def in parsed_module.classes.values():
             class_fqn = fqn.child(class_def.name)
             for base in get_bases_from_class(class_def):
                 parent = find_source_or_external_import(
                     searched_symbol=base,
                     search_module=fqn,
-                    module_lookup=module_hierarchy,
+                    module_lookup=module_lookup,
                 )
                 if parent:
-                    inheritance.add_relation(
-                        parent=parent,
-                        child=class_fqn,
-                    )
+                    child_lookup[parent].append(class_fqn)
 
-    settings_subclasses = inheritance.transitive_subclasses(BASE_SETTINGS_FQN)
-
-    fields_per_class: dict[str, list[SettingField]] = {}
-    for fqn in sorted(settings_subclasses):
-        class_def = module_hierarchy[fqn.parent].classes[fqn.leaf]
-        fields_per_class[class_def.name] = extract_fields_from_settings(
-            class_def
+    parsed_settings = defaultdict(ParsedSettings)
+    children = child_lookup[BASE_SETTINGS_FQN]
+    for child in children:
+        gather_settings_for_subtree(
+            node=child,
+            child_lookup=child_lookup,
+            module_lookup=module_lookup,
+            parsed_settings=parsed_settings,
         )
 
-    env_example_txt = build_env_example(fields_per_class)
+    env_example_txt = build_env_example(parsed_settings)
     if env_example_txt:
-        write_to_file(env_example_txt, project_root / OUTPUT_FILE)
-
-
-def write_to_file(text: str, file: Path) -> None:
-    file.write_text(text)
+        (project_root / OUTPUT_FILE).write_text(env_example_txt)
 
 
 def walk_project(
@@ -199,7 +198,7 @@ def walk_project(
         )
 
         for item in sorted(dir.iterdir()):
-            if is_package and item.is_file() and item.suffix == ".py":
+            if item.is_file() and item.suffix == ".py":
                 module = ast.parse(item.read_text())
                 module_fqn = (
                     new_parent
@@ -213,9 +212,38 @@ def walk_project(
                 and item.name not in ALWAYS_EXCLUDE_DIRS
                 and item not in exclude_paths
             ):
-                yield from walk_dir(item, parent_package=parent_package)
+                yield from walk_dir(item, parent_package=new_parent)
 
     yield from walk_dir(root, parent_package=QualifiedName(()))
+
+
+def gather_settings_for_subtree(
+    node: QualifiedName,
+    child_lookup: defaultdict[QualifiedName, list[QualifiedName]],
+    module_lookup: dict[QualifiedName, ParsedModule],
+    parsed_settings: defaultdict[QualifiedName, ParsedSettings],
+) -> None:
+    """
+    Recursively parses fieldsfrom settings classes and adds them to
+    an aggregator for both the currently considered class and its children.
+    """
+    class_def = module_lookup[node.parent].classes[node.leaf]
+    fields = parse_fields_from_settings(class_def)
+    prefix = parse_settings_prefix(class_def)
+
+    parsed_settings[node].prefix = prefix
+    parsed_settings[node].fields.update(fields)
+
+    for child in child_lookup[node]:
+        # add parent fields for the child settings class
+        parsed_settings[child].fields.update(parsed_settings[node].fields)
+
+        gather_settings_for_subtree(
+            node=child,
+            child_lookup=child_lookup,
+            module_lookup=module_lookup,
+            parsed_settings=parsed_settings,
+        )
 
 
 def find_source_or_external_import(
@@ -229,11 +257,8 @@ def find_source_or_external_import(
         - the fqn to the implementation of the searched symbol
         - None if none of the above, and no imports can be followed
     """
-    match searched_symbol.parts:
-        case (symbol_object_name,):
-            symbol_module_ref = None
-        case (*_, symbol_module_ref, symbol_object_name):
-            pass
+    *module_parts, symbol_object_name = searched_symbol.parts
+    symbol_module_ref = ".".join(module_parts) or None
 
     parsed_module = module_lookup.get(search_module)
 
@@ -249,10 +274,13 @@ def find_source_or_external_import(
     imports = resolve_import_statements(parsed_module.ast_module)
     for imp in imports:
         match imp:
-            case NameImport(module, name, _) if name == symbol_object_name:
+            case NameImport(module, name) if name == symbol_object_name:
+                resolved = imp.get_qualified_parent_module(
+                    current=search_module
+                )
                 return find_source_or_external_import(
                     searched_symbol=QualifiedName((name,)),
-                    search_module=QualifiedName.from_str(module),
+                    search_module=resolved,
                     module_lookup=module_lookup,
                 )
             case ModuleImport(module, alias) if (
@@ -267,51 +295,82 @@ def find_source_or_external_import(
     return None
 
 
-def build_env_example(fields_per_class: dict[str, list[SettingField]]) -> str:
-    if not fields_per_class:
+def build_env_example(
+    parsed_settings: dict[QualifiedName, ParsedSettings],
+) -> str:
+    if not parsed_settings:
         return ""
     sections = [
-        f"# {class_name}\n"
+        f"# {qn.leaf}\n"
         + "\n".join(
-            f"{field.prefix or ''}{field.name}=".upper() for field in fields
+            f"{parsed.prefix or ''}{field}=".upper()
+            for field in sorted(parsed.fields)
         )
-        for class_name, fields in fields_per_class.items()
+        for qn, parsed in sorted(
+            parsed_settings.items(), key=lambda x: x[0].leaf
+        )
     ]
     return "\n\n".join(sections) + "\n"
 
 
-def extract_fields_from_settings(cd: ClassDef) -> list[SettingField]:
+def parse_settings_prefix(cd: ClassDef) -> str | None:
+    """
+    Parses the model_config configuration to find the configured
+    prefix. model_config can be given as a SettingConfigDict and
+    as a plain dict. we cover both cases.
+    """
     prefixes: list[str] = []
 
     for item in cd.body:
-        if not isinstance(item, (Assign, AnnAssign)):
+        if isinstance(item, AnnAssign):
+            target = item.target
+            value = item.value
+        elif isinstance(item, Assign) and len(item.targets) == 1:
+            target = item.targets[0]
+            value = item.value
+        else:
             continue
 
-        value = item.value
-        if not isinstance(value, Call):
+        if not (isinstance(target, Name) and target.id == "model_config"):
             continue
 
-        if not (
-            isinstance(value.func, Name)
-            and value.func.id == SETTINGS_CONFIG_CLASS
-        ):
-            continue
-
-        for kw in value.keywords:
-            if (
-                kw.arg == ENV_PREFIX_ARG
-                and isinstance(kw.value, Constant)
-                and isinstance(kw.value.value, str)
+        if isinstance(value, Call):
+            # SettingsConfigDict case
+            if not (
+                isinstance(value.func, Name)
+                and value.func.id == SETTINGS_CONFIG_CLASS
             ):
-                prefixes.append(kw.value.value)
+                continue
+            for kw in value.keywords:
+                if (
+                    kw.arg == ENV_PREFIX_ARG
+                    and isinstance(kw.value, Constant)
+                    and isinstance(kw.value.value, str)
+                ):
+                    prefixes.append(kw.value.value)
+
+        elif isinstance(value, Dict):
+            # plain dict case
+            for key, val in zip(value.keys, value.values):
+                if (
+                    isinstance(key, Constant)
+                    and key.value == ENV_PREFIX_ARG
+                    and isinstance(val, Constant)
+                    and isinstance(val.value, str)
+                ):
+                    prefixes.append(val.value)
 
     if len(prefixes) > 1:
         raise ValueError(
-            f"Multiple prefixes found for class {cd.name}: {(prefixes,)}"
+            f"Multiple prefixes found for class {cd.name}: {prefixes}"
         )
 
     prefix = prefixes[0] if prefixes else None
-    fields: list[SettingField] = []
+    return prefix
+
+
+def parse_fields_from_settings(cd: ClassDef) -> list[str]:
+    fields: list[str] = []
 
     for elem in cd.body:
         if not isinstance(elem, AnnAssign):
@@ -319,13 +378,7 @@ def extract_fields_from_settings(cd: ClassDef) -> list[SettingField]:
         if not isinstance(elem.target, Name):
             continue
         name: str = elem.target.id
-        fields.append(
-            SettingField(
-                name=name,
-                settings_class=cd.name,
-                prefix=prefix,
-            )
-        )
+        fields.append(name)
 
     return fields
 
@@ -335,8 +388,15 @@ def get_bases_from_class(cd: ClassDef) -> list[QualifiedName]:
     for base in cd.bases:
         if isinstance(base, Name):
             bases.append(QualifiedName((base.id,)))
-        elif isinstance(base, Attribute) and isinstance(base.value, Name):
-            bases.append(QualifiedName((base.value.id, base.attr)))
+        elif isinstance(base, Attribute):
+            parts: list[str] = [base.attr]
+            node = base.value
+            while isinstance(node, Attribute):
+                parts.append(node.attr)
+                node = node.value
+            if isinstance(node, Name):
+                parts.append(node.id)
+                bases.append(QualifiedName(tuple(reversed(parts))))
     return bases
 
 
@@ -352,10 +412,13 @@ def resolve_import_statements(module: ast.Module) -> list[ImportItem]:
                 ModuleImport(module=name.name, alias=name.asname)
                 for name in item.names
             )
-        elif isinstance(item, ast.ImportFrom) and item.module:
+        elif isinstance(item, ast.ImportFrom):
             imports.extend(
                 NameImport(
-                    module=item.module, name=name.name, alias=name.asname
+                    module=item.module,
+                    name=name.name,
+                    alias=name.asname,
+                    level=item.level,
                 )
                 for name in item.names
             )

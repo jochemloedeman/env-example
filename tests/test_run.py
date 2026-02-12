@@ -1,20 +1,31 @@
-from collections import namedtuple
+from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
 
 from env_example.main import generate_env_example
 
-Case = namedtuple("Case", ["name", "exclude_dirs"])
+
+@dataclass
+class Case:
+    name: str
+    exclude_dirs: list[str] | None = None
+    ignore_optionals: bool = False
 
 
 test_cases: list[Case] = [
-    Case(name="prefix", exclude_dirs=None),
-    Case(name="alias_import", exclude_dirs=None),
-    Case(name="module_import", exclude_dirs=None),
-    Case(name="selective_import", exclude_dirs=None),
-    Case(name="multiple_settings", exclude_dirs=None),
-    Case(name="default_exclude", exclude_dirs=None),
+    Case(name="prefix"),
+    Case(name="alias_import"),
+    Case(name="module_import"),
+    Case(name="selective_import"),
+    Case(name="multiple_settings"),
+    Case(name="default_exclude"),
+    Case(name="transitive_inheritance"),
+    Case(name="two_level_transitive_inheritance"),
+    Case(name="reexport_inheritance"),
+    Case(name="qualified_module_import"),
+    Case(name="relative_import"),
+    Case(name="main_file"),
     Case(
         name="user_exclude",
         exclude_dirs=[
@@ -23,12 +34,7 @@ test_cases: list[Case] = [
             "package/included/nested_excluded",
         ],
     ),
-    Case(name="transitive_inheritance", exclude_dirs=None),
-    Case(name="two_level_transitive_inheritance", exclude_dirs=None),
-    Case(name="reexport_inheritance", exclude_dirs=None),
-    Case(name="qualified_module_import", exclude_dirs=None),
-    Case(name="relative_import", exclude_dirs=None),
-    Case(name="main_file", exclude_dirs=None),
+    Case(name="optional_fields", ignore_optionals=True),
 ]
 
 
@@ -46,7 +52,11 @@ def run_case(test_case):
         if test_case.exclude_dirs
         else None
     )
-    generate_env_example(project_root=dir_arg, exclude_relative=exclude_paths)
+    generate_env_example(
+        project_root=dir_arg,
+        exclude_relative=exclude_paths,
+        ignore_optionals=test_case.ignore_optionals,
+    )
     yield
     example_file = dir_arg / ".env.example"
     example_file.unlink()
@@ -95,7 +105,11 @@ def test_no_settings_no_file_created() -> None:
     project_dir = Path(__file__).parent / "cases" / "no_settings" / "project"
     example_file = project_dir / ".env.example"
 
-    generate_env_example(project_root=project_dir, exclude_relative=None)
+    generate_env_example(
+        project_root=project_dir,
+        exclude_relative=None,
+        ignore_optionals=False,
+    )
 
     try:
         assert not example_file.exists()
@@ -109,4 +123,8 @@ def test_multiple_prefixes_raises_error() -> None:
     )
 
     with pytest.raises(ValueError, match="Multiple prefixes found"):
-        generate_env_example(project_root=project_dir, exclude_relative=None)
+        generate_env_example(
+            project_root=project_dir,
+            exclude_relative=None,
+            ignore_optionals=False,
+        )

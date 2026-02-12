@@ -95,10 +95,16 @@ class ParsedModule:
     classes: dict[str, ast.ClassDef]
 
 
+@dataclass(frozen=True)
+class SettingsField:
+    name: str
+    has_default: bool = False
+
+
 @dataclass
 class ParsedSettings:
     prefix: str | None = None
-    fields: set[str] = field(default_factory=set)
+    fields: set[SettingsField] = field(default_factory=set)
 
 
 def main() -> None:
@@ -109,18 +115,24 @@ def main() -> None:
         type=Path,
         action="append",
     )
+    parser.add_argument(
+        "--ignore-optionals",
+        action="store_true",
+    )
     namespace = parser.parse_args()
 
     cwd = Path.cwd()
     generate_env_example(
         project_root=cwd,
         exclude_relative=namespace.exclude_dir,
+        ignore_optionals=namespace.ignore_optionals,
     )
 
 
 def generate_env_example(
     project_root: Path,
     exclude_relative: list[Path] | None,
+    ignore_optionals: bool,
 ) -> None:
     """
     Orchestrator function.
@@ -169,7 +181,9 @@ def generate_env_example(
             parsed_settings=parsed_settings,
         )
 
-    env_example_txt = build_env_example(parsed_settings)
+    env_example_txt = build_env_example(
+        parsed_settings, ignore_optionals=ignore_optionals
+    )
     if env_example_txt:
         (project_root / OUTPUT_FILE).write_text(env_example_txt)
 
@@ -228,7 +242,9 @@ def gather_settings_for_subtree(
     an aggregator for both the currently considered class and its children.
     """
     class_def = module_lookup[node.parent].classes[node.leaf]
-    fields = parse_fields_from_settings(class_def)
+    fields = [
+        f for elem in class_def.body if (f := parse_field(elem)) is not None
+    ]
     prefix = parse_settings_prefix(class_def)
 
     parsed_settings[node].prefix = prefix
@@ -297,14 +313,16 @@ def find_source_or_external_import(
 
 def build_env_example(
     parsed_settings: dict[QualifiedName, ParsedSettings],
+    ignore_optionals: bool,
 ) -> str:
     if not parsed_settings:
         return ""
     sections = [
         f"# {qn.leaf}\n"
         + "\n".join(
-            f"{parsed.prefix or ''}{field}=".upper()
-            for field in sorted(parsed.fields)
+            f"{parsed.prefix or ''}{f.name}=".upper()
+            for f in sorted(parsed.fields, key=lambda f: f.name)
+            if not (ignore_optionals and f.has_default)
         )
         for qn, parsed in sorted(
             parsed_settings.items(), key=lambda x: x[0].leaf
@@ -369,18 +387,50 @@ def parse_settings_prefix(cd: ClassDef) -> str | None:
     return prefix
 
 
-def parse_fields_from_settings(cd: ClassDef) -> list[str]:
-    fields: list[str] = []
+def parse_field(node: ast.stmt) -> SettingsField | None:
+    """Parse a single settings field from a class body element.
 
-    for elem in cd.body:
-        if not isinstance(elem, AnnAssign):
-            continue
-        if not isinstance(elem.target, Name):
-            continue
-        name: str = elem.target.id
-        fields.append(name)
+    Returns None if the node is not an annotated assignment, and a
+    SettingsField with default detection that accounts for Pydantic's
+    Field() semantics.
+    """
+    if not isinstance(node, AnnAssign):
+        return None
+    if not isinstance(node.target, Name):
+        return None
 
-    return fields
+    name = node.target.id
+    value = node.value
+    if value is None:
+        return SettingsField(name=name, has_default=False)
+
+    if not (
+        isinstance(value, Call)
+        and isinstance(value.func, Name)
+        and value.func.id == "Field"
+    ):
+        return SettingsField(name=name, has_default=True)
+
+    # Pydantic Field provides a default only if an explicit non-Ellipsis
+    # default or a default_factory is provided.
+    if (
+        value.args
+        and isinstance(value.args[0], Constant)
+        and value.args[0].value is not ...
+    ):
+        return SettingsField(name=name, has_default=True)
+
+    for kw in value.keywords:
+        if kw.arg == "default":
+            is_ellipsis = (
+                isinstance(kw.value, Constant) and kw.value.value is ...
+            )
+            if not is_ellipsis:
+                return SettingsField(name=name, has_default=True)
+        if kw.arg == "default_factory":
+            return SettingsField(name=name, has_default=True)
+
+    return SettingsField(name=name, has_default=False)
 
 
 def get_bases_from_class(cd: ClassDef) -> list[QualifiedName]:

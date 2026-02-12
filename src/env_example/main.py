@@ -16,7 +16,6 @@ from pathlib import Path
 from typing import Iterator, Self
 
 ALWAYS_EXCLUDE_DIRS = {".venv", "site-packages"}
-SETTINGS_CONFIG_CLASS = "SettingsConfigDict"
 ENV_PREFIX_ARG = "env_prefix"
 OUTPUT_FILE = ".env.example"
 
@@ -359,7 +358,7 @@ def parse_settings_prefix(cd: ClassDef) -> str | None:
             # SettingsConfigDict case
             if not (
                 isinstance(value.func, Name)
-                and value.func.id == SETTINGS_CONFIG_CLASS
+                and value.func.id == "SettingsConfigDict"
             ):
                 continue
             for kw in value.keywords:

@@ -107,16 +107,20 @@ class ParsedSettings:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(
+        description="Create a single .env.example file for all Pydantic settings classes in your project."
+    )
     parser.add_argument(
         "--exclude-dir",
         default=None,
         type=Path,
         action="append",
+        help="Exclude directory from the search. Relative to cwd.",
     )
     parser.add_argument(
         "--ignore-optionals",
         action="store_true",
+        help="Optional settings fields are ignored.",
     )
     namespace = parser.parse_args()
 

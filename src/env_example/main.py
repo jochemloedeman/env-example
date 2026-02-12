@@ -317,17 +317,20 @@ def build_env_example(
 ) -> str:
     if not parsed_settings:
         return ""
-    sections = [
-        f"# {qn.leaf}\n"
-        + "\n".join(
+
+    sections: list[str] = []
+    for qn, parsed in sorted(parsed_settings.items(), key=lambda x: x[0].leaf):
+        lines = [
             f"{parsed.prefix or ''}{f.name}=".upper()
             for f in sorted(parsed.fields, key=lambda f: f.name)
             if not (ignore_optionals and f.has_default)
-        )
-        for qn, parsed in sorted(
-            parsed_settings.items(), key=lambda x: x[0].leaf
-        )
-    ]
+        ]
+        if not lines:
+            continue
+        sections.append(f"# {qn.leaf}\n" + "\n".join(lines))
+
+    if not sections:
+        return ""
     return "\n\n".join(sections) + "\n"
 
 
@@ -388,12 +391,6 @@ def parse_settings_prefix(cd: ClassDef) -> str | None:
 
 
 def parse_field(node: ast.stmt) -> SettingsField | None:
-    """Parse a single settings field from a class body element.
-
-    Returns None if the node is not an annotated assignment, and a
-    SettingsField with default detection that accounts for Pydantic's
-    Field() semantics.
-    """
     if not isinstance(node, AnnAssign):
         return None
     if not isinstance(node.target, Name):
@@ -413,12 +410,13 @@ def parse_field(node: ast.stmt) -> SettingsField | None:
 
     # Pydantic Field provides a default only if an explicit non-Ellipsis
     # default or a default_factory is provided.
-    if (
-        value.args
-        and isinstance(value.args[0], Constant)
-        and value.args[0].value is not ...
-    ):
-        return SettingsField(name=name, has_default=True)
+    if value.args:
+        is_ellipsis = (
+            isinstance(first_arg := value.args[0], Constant)
+            and first_arg.value is ...
+        )
+        if not is_ellipsis:
+            return SettingsField(name=name, has_default=True)
 
     for kw in value.keywords:
         if kw.arg == "default":

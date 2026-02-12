@@ -21,8 +21,11 @@ I recommend to use `uvx` to run `env-example`:
 # Basic usage
 uvx env-example
 
-# Exclude specific directories relative to the project root
+# Exclude specific directories from the search. Relative to the project root
 uvx env-example --exclude-dir other/scripts
+
+# Ignore optional settings fields
+uvx env-example --ignore-optionals
 ```
 
 # Example

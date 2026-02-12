@@ -104,7 +104,7 @@ class SettingsField:
 @dataclass
 class ParsedSettings:
     prefix: str | None = None
-    fields: set[SettingsField] = field(default_factory=set)
+    fields: dict[str, SettingsField] = field(default_factory=dict)
 
 
 def main() -> None:
@@ -248,7 +248,7 @@ def gather_settings_for_subtree(
     prefix = parse_settings_prefix(class_def)
 
     parsed_settings[node].prefix = prefix
-    parsed_settings[node].fields.update(fields)
+    parsed_settings[node].fields.update({f.name: f for f in fields})
 
     for child in child_lookup[node]:
         # add parent fields for the child settings class
@@ -322,7 +322,7 @@ def build_env_example(
     for qn, parsed in sorted(parsed_settings.items(), key=lambda x: x[0].leaf):
         lines = [
             f"{parsed.prefix or ''}{f.name}=".upper()
-            for f in sorted(parsed.fields, key=lambda f: f.name)
+            for f in sorted(parsed.fields.values(), key=lambda f: f.name)
             if not (ignore_optionals and f.has_default)
         ]
         if not lines:

@@ -35,6 +35,7 @@ test_cases: list[Case] = [
         ],
     ),
     Case(name="optional_fields", ignore_optionals=True),
+    Case(name="inherited_field_override", ignore_optionals=True),
 ]
 
 
